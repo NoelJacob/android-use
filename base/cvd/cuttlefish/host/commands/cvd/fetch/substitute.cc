@@ -1,0 +1,227 @@
+//
+// Copyright (C) 2019 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "cuttlefish/host/commands/cvd/fetch/substitute.h"
+
+#include <unistd.h>
+
+#include <cerrno>
+#include <optional>
+#include <random>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "absl/strings/match.h"
+#include "absl/strings/strip.h"
+#include "android-base/file.h"
+#include "fmt/format.h"
+#include "google/protobuf/text_format.h"
+
+#include "cuttlefish/common/libs/utils/environment.h"
+#include "cuttlefish/common/libs/utils/files.h"
+#include "cuttlefish/files/directory_exists.h"
+#include "cuttlefish/files/file_exists.h"
+#include "cuttlefish/files/is_symlink.h"
+#include "cuttlefish/host/commands/cvd/fetch/host_pkg_migration.pb.h"
+#include "cuttlefish/posix/strerror.h"
+#include "cuttlefish/posix/symlink.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+namespace {
+
+/**
+ * cvd needs to be run from a path ending in cuttlefish-common/bin/cvd. This
+ * function validates that and returns the path to the cuttlefish-common
+ * directory.
+ */
+Result<std::string> GetCuttlefishCommonDir() {
+  std::string cvd_exe = android::base::GetExecutablePath();
+  CF_EXPECTF(absl::EndsWith(cvd_exe, "cuttlefish-common/bin/cvd"),
+             "Can't perform substitutions when cvd is not under "
+             "cuttlefish-common/bin, it's currently at {}",
+             cvd_exe);
+  return cvd_exe.substr(0, cvd_exe.size() - std::string("/bin/cvd").size());
+}
+
+Result<void> Substitute(const std::string& target,
+                        const std::string& full_link_name) {
+  if (!FileExists(target)) {
+    LOG(WARNING) << "Target file " << target << " missing; not making "
+                 << "substitution " << target << " to " << full_link_name;
+    return {};
+  }
+
+  CF_EXPECT(EnsureDirectoryExists(android::base::Dirname(full_link_name)));
+
+  std::random_device rd;
+  std::string tmp_link_name;
+  constexpr int kMaxRetries = 10;
+  for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+    tmp_link_name = fmt::format("{}.tmp_{}_{}", full_link_name, getpid(), rd());
+    auto symlink_res = Symlink(target, tmp_link_name);
+    if (symlink_res.has_value()) {
+      break;
+    }
+    if (errno == EEXIST && attempt + 1 < kMaxRetries) {
+      continue;
+    }
+    return symlink_res;
+  }
+
+  if (rename(tmp_link_name.c_str(), full_link_name.c_str()) != 0) {
+    const int err = errno;
+    unlink(tmp_link_name.c_str());
+    return CF_ERRF("Failed to rename symlink: {}", StrError(err));
+  }
+
+  return {};
+}
+
+Result<void> SubstituteWithFlag(
+    const std::string& target_dir,
+    const std::vector<std::string>& host_substitutions) {
+  if (host_substitutions.empty()) {
+    return {};
+  }
+  const std::string bin_dir_parent = CF_EXPECT(GetCuttlefishCommonDir());
+
+  if (host_substitutions == std::vector<std::string>{"all"}) {
+    auto make_substitution = [&bin_dir_parent, &target_dir](
+                                 const std::string& path) -> Result<void> {
+      if (DirectoryExists(path)) {
+        return {};
+      }
+      std::string_view local_path(path);
+      CF_EXPECTF(absl::ConsumePrefix(&local_path, bin_dir_parent),
+                 "Unexpected prefix in : '{}'", local_path);
+
+      const std::string to_substitute = target_dir + std::string(local_path);
+      CF_EXPECT(Substitute(path, to_substitute));
+      return {};
+    };
+    CF_EXPECT(WalkDirectory(bin_dir_parent, make_substitution));
+    auto detect_not_substituted = [](const std::string& path) -> Result<void> {
+      if (!CF_EXPECT(IsSymlink(path)) && !DirectoryExists(path)) {
+        VLOG(0) << "Not substituted: " << path;
+      }
+      return {};
+    };
+    Result<void> detect_res = WalkDirectory(target_dir, detect_not_substituted);
+    if (!detect_res.has_value()) {
+      VLOG(0) << "Failed to produce substitution report: "
+              << detect_res.error();
+    }
+  } else {
+    for (const std::string& substitution : host_substitutions) {
+      std::string source = fmt::format("{}/{}", bin_dir_parent, substitution);
+      std::string to_substitute =
+          fmt::format("{}/{}", target_dir, substitution);
+      CF_EXPECT(Substitute(source, to_substitute));
+    }
+  }
+
+  return {};
+}
+
+bool SubstituteCheckTargetExists(const fetch::HostPkgMigrationConfig& config,
+                                 std::string_view target_keyword) {
+  for (int j = 0; j < config.symlinks_size(); j++) {
+    if (config.symlinks(j).target().find(target_keyword) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Result<void> SubstituteWithMarker(const std::string& target_dir,
+                                  const std::string& marker_file) {
+  static constexpr std::string_view kRunCvdKeyword = "bin/run_cvd";
+  static constexpr std::string_view kSensorsSimulatorKeyword =
+      "bin/sensors_simulator";
+
+  std::string content = CF_EXPECTF(ReadFileContents(marker_file),
+                                   "failed to read '{}'", marker_file);
+  fetch::HostPkgMigrationConfig config;
+  CF_EXPECT(google::protobuf::TextFormat::ParseFromString(content, &config),
+            "failed parsing debian_substitution_marker file");
+  auto run_cvd_substituted =
+      SubstituteCheckTargetExists(config, kRunCvdKeyword);
+  static const std::string common_dir = CF_EXPECT(GetCuttlefishCommonDir());
+  for (int j = 0; j < config.symlinks_size(); j++) {
+    // TODO(b/452945156): The sensors simulator is launched by run_cvd, so these
+    // two components must always be substituted together. Between May 2025 and
+    // Oct 2025 we substituted sensors_simulator alone. Restore compatibility by
+    // ignoring the sensors_simulator substitute when run_cvd is not
+    // substituted. This workaround can be removed once compatibility with
+    // mid-2025 images is no longer critical.
+    //
+    // Related discussion: b/459880764.
+    if (!run_cvd_substituted &&
+        config.symlinks(j).target().find(kSensorsSimulatorKeyword) !=
+            std::string::npos) {
+      LOG(WARNING) << "Sensors simulator (" << config.symlinks(j).target()
+                   << ") cannot be substituted on its own; run_cvd must be "
+                      "substituted as well.";
+      continue;
+    }
+
+    std::string link_name = config.symlinks(j).link_name();
+    std::string target = fmt::format("{}/{}", common_dir, link_name);
+    std::string full_link_name = fmt::format("{}/{}", target_dir, link_name);
+    CF_EXPECT(Substitute(target, full_link_name));
+  }
+  return {};
+}
+
+}  // namespace
+
+Result<void> HostPackageSubstitution(
+    const std::string& target_dir,
+    const std::vector<std::string>& host_substitutions) {
+  // TODO: remove when we can safely add this to the marker file.
+  std::string cvdalloc_src =
+      fmt::format("{}/bin/{}", CF_EXPECT(GetCuttlefishCommonDir()), "cvdalloc");
+  std::string cvdalloc_name = fmt::format("{}/bin/{}", target_dir, "cvdalloc");
+  CF_EXPECT(Substitute(cvdalloc_src, cvdalloc_name));
+
+  // [DEVELOPMENT ONLY] Substitute when `--host_substitutions` flag is used.
+  if (!host_substitutions.empty()) {
+    return SubstituteWithFlag(target_dir, host_substitutions);
+  }
+
+  // [DEVELOPMENT ONLY] Substitute when LOCAL_DEBIAN_SUBSTITUTION_MARKER_FILE is
+  // set.
+  std::optional<std::string> local_marker_file =
+      StringFromEnv("LOCAL_DEBIAN_SUBSTITUTION_MARKER_FILE");
+  if (local_marker_file.has_value()) {
+    std::string marker_file = local_marker_file.value();
+    CF_EXPECTF(FileExists(marker_file),
+               "local debian substitution marker file does not exist: {}",
+               marker_file);
+    LOG(INFO) << "using local debian substitution marker file: " << marker_file;
+    return SubstituteWithMarker(target_dir, marker_file);
+  }
+
+  if (FileExists(target_dir + "/etc/debian_substitution_marker")) {
+    return SubstituteWithFlag(target_dir, {"all"});
+  }
+
+  return {};
+}
+
+}  // namespace cuttlefish

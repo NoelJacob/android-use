@@ -1,0 +1,154 @@
+//
+// Copyright (C) 2023 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "cuttlefish/common/libs/utils/files.h"
+
+#include <stdlib.h>
+#include <unistd.h>
+
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "absl/cleanup/cleanup.h"
+#include "absl/strings/str_cat.h"
+#include "android-base/file.h"
+#include "gmock/gmock.h"
+#include "gtest/gtest.h"
+
+#include "cuttlefish/files/are_hard_linked.h"
+#include "cuttlefish/files/file_exists.h"
+#include "cuttlefish/files/is_directory_empty.h"
+#include "cuttlefish/result/result.h"
+#include "cuttlefish/result/result_matchers.h"
+
+namespace cuttlefish {
+
+using testing::IsTrue;
+
+void CreateTempFileWithText(const std::string& filepath,
+                            const std::string& text) {
+  std::ofstream file(filepath);
+  file << text;
+  file.close();
+}
+
+class FilesTests : public ::testing::Test {
+ protected:
+  Result<void> CreateTestDirs() {
+    src_dir_ = std::string(temp_dir_.path) + "/device-imge-123.zip";
+    CF_EXPECT(EnsureDirectoryExists(src_dir_, 0755));
+    CreateTempFileWithText(src_dir_ + "/file1.txt", "file1");
+    std::string sub_dir = src_dir_ + "/sub_dir";
+    CF_EXPECT(EnsureDirectoryExists(sub_dir.c_str(), 0755));
+    CreateTempFileWithText(sub_dir + "/file2.txt", "file2");
+    dst_dir_ = std::string(temp_dir_.path) + "/target_dir";
+    return {};
+  }
+
+  void SetUp() override {
+    Result<void> result = CreateTestDirs();
+    if (!result.has_value()) {
+      FAIL() << result.error();
+    }
+  }
+
+  TemporaryDir temp_dir_;
+  std::string src_dir_;
+  std::string dst_dir_;
+};
+
+TEST_F(FilesTests, LinkOrCopyRecursivelyFailsIfSourceIsNotADirectory) {
+  Result<void> result = LinkOrCopyDirectoryContentsRecursively(
+      src_dir_ + "/file1.txt", dst_dir_ + "/file1.txt");
+
+  EXPECT_THAT(result, IsError());
+}
+
+TEST_F(FilesTests, LinkOrCopyRecursively) {
+  Result<void> result =
+      LinkOrCopyDirectoryContentsRecursively(src_dir_, dst_dir_);
+
+  EXPECT_THAT(result, IsOk());
+  Result<bool> resultHardLinked =
+      AreHardLinked(src_dir_ + "/file1.txt", dst_dir_ + "/file1.txt");
+  EXPECT_THAT(resultHardLinked, IsOk());
+  EXPECT_THAT(resultHardLinked.value(), IsTrue());
+  resultHardLinked = AreHardLinked(src_dir_ + "/sub_dir/file2.txt",
+                                   dst_dir_ + "/sub_dir/file2.txt");
+  EXPECT_THAT(resultHardLinked, IsOk());
+  EXPECT_THAT(resultHardLinked.value(), IsTrue());
+}
+
+TEST_F(FilesTests, MoveDirectoryContentsFailsIfSourceIsNotADirectory) {
+  Result<void> result =
+      MoveDirectoryContents(src_dir_ + "/file1.txt", dst_dir_ + "/file1.txt");
+  EXPECT_THAT(result, IsError());
+}
+
+TEST_F(FilesTests, MoveDirectoryContents) {
+  Result<void> result = MoveDirectoryContents(src_dir_, dst_dir_);
+  EXPECT_THAT(result, IsOk());
+  EXPECT_THAT(IsDirectoryEmpty(src_dir_), IsOkAndValue(true));
+  EXPECT_THAT(FileExists(dst_dir_ + "/file1.txt"), IsTrue());
+  EXPECT_THAT(FileExists(dst_dir_ + "/sub_dir/file2.txt"), IsTrue());
+}
+
+TEST(FilesTest, PathWithCustomEnv) {
+  const std::string env_name = "TEST_PATH";
+  const std::string dir1 = "/foo/bar";
+  const std::string dir2 = "/baz";
+  const std::string env_value = absl::StrCat(dir1, ":", dir2);
+  setenv(env_name.c_str(), env_value.c_str(), 1);
+  absl::Cleanup cleanup = [&env_name]() { unsetenv(env_name.c_str()); };
+
+  std::vector<std::string> result = Path(env_name);
+  ASSERT_EQ(result.size(), 2);
+  EXPECT_EQ(result[0], dir1);
+  EXPECT_EQ(result[1], dir2);
+}
+
+TEST(FilesTest, PathWithSecondCustomEnv) {
+  const std::string env_name = "TEST_PATH";
+  const std::string dir = "/foo";
+  setenv(env_name.c_str(), dir.c_str(), 1);
+  absl::Cleanup cleanup = [&env_name]() { unsetenv(env_name.c_str()); };
+
+  auto result = Path(env_name);
+  ASSERT_EQ(result.size(), 1);
+  EXPECT_EQ(result[0], dir);
+}
+
+TEST(FilesTest, SearchFindsFile) {
+  const std::string temp_dir = testing::TempDir();
+  const std::string file_name = "search_test_file";
+  const std::string full_path = absl::StrCat(temp_dir, "/", file_name);
+
+  EXPECT_TRUE(android::base::WriteStringToFile("", full_path));
+  absl::Cleanup cleanup = [full_path]() { unlink(full_path.c_str()); };
+
+  auto result = Search({temp_dir}, file_name);
+  EXPECT_THAT(result, IsOkAndValue(full_path));
+}
+
+TEST(FilesTest, SearchFileNotFoundReturnsError) {
+  const std::string temp_dir = testing::TempDir();
+  EXPECT_FALSE(FileExists(absl::StrCat(temp_dir, "/search_non_existent_file")));
+
+  auto result = Search({temp_dir}, "search_non_existent_file");
+  EXPECT_FALSE(result.has_value());
+}
+
+}  // namespace cuttlefish

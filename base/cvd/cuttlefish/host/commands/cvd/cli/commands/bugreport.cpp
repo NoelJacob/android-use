@@ -1,0 +1,161 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/cli/commands/bugreport.h"
+
+#include <stdlib.h>
+
+#include <iostream>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "absl/strings/str_cat.h"
+#include "android-base/file.h"
+#include "fmt/core.h"
+
+#include "cuttlefish/common/libs/utils/files.h"
+#include "cuttlefish/files/file_exists.h"
+#include "cuttlefish/flag_parser/flag.h"
+#include "cuttlefish/flag_parser/gflags_compat.h"
+#include "cuttlefish/host/commands/cvd/cli/command_request.h"
+#include "cuttlefish/host/commands/cvd/cli/selector/selector.h"
+#include "cuttlefish/host/commands/cvd/cli/utils.h"
+#include "cuttlefish/host/commands/cvd/instances/instance_manager.h"
+#include "cuttlefish/host/commands/cvd/instances/local_instance_group.h"
+#include "cuttlefish/host/commands/cvd/utils/common.h"
+#include "cuttlefish/host/libs/log_names/log_names.h"
+#include "cuttlefish/host/libs/zip/libzip_cc/archive.h"
+#include "cuttlefish/host/libs/zip/zip_file.h"
+#include "cuttlefish/process/command.h"
+#include "cuttlefish/process/managed_stdio.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+namespace {
+
+constexpr char kHostBugreportBin[] = "cvd_internal_host_bugreport";
+constexpr char kSummaryHelpText[] =
+    "Run cvd bugreport --help for command description";
+
+// Accepts a copy of the args to not modify the original.
+Result<std::string> OutputFileFromArgs(std::vector<std::string> args) {
+  // This flag must match the one defined in
+  // //cuttlefish/host/commands/host_bugreport/main.cc
+  std::string output = "host_bugreport.zip";
+  std::vector<Flag> flags = {
+      GflagsCompatFlag("output", output),
+  };
+  CF_EXPECT(ConsumeFlags(flags, args));
+  return output;
+}
+
+Result<void> AddFetchLogIfPresent(const LocalInstanceGroup& instance_group,
+                                  const std::string& output_file) {
+  std::string fetch_log_path =
+      instance_group.ProductOutPath() + "/" + kLogNameFetch;
+  if (!FileExists(fetch_log_path)) {
+    // The fetch log is in the parent of the host artifacts path when cvd create
+    // --config_file was used.
+    fetch_log_path =
+        android::base::Dirname(instance_group.HostArtifactsPath()) + "/" +
+        kLogNameFetch;
+  }
+  if (!FileExists(fetch_log_path)) {
+    // There will be no fetch log when running from local sources
+    return {};
+  }
+  LOG(INFO) << "Attaching " << kLogNameFetch << " to report";
+  WritableZip archive = CF_EXPECT(ZipOpenReadWrite(output_file));
+  CF_EXPECT(AddFileAt(archive, fetch_log_path, kLogNameFetch));
+  CF_EXPECT(WritableZip::Finalize(std::move(archive)));
+  return {};
+}
+}  // namespace
+
+CvdBugreportCommandHandler::CvdBugreportCommandHandler(
+    InstanceManager& instance_manager)
+    : instance_manager_(instance_manager) {}
+
+Result<void> CvdBugreportCommandHandler::Handle(const CommandRequest& request) {
+  std::vector<std::string> cmd_args = request.SubcommandArguments();
+  std::unordered_map<std::string, std::string> env = request.Env();
+
+  std::string output_file =
+      CF_EXPECT(OutputFileFromArgs(cmd_args), "Failed to parse output flag");
+
+  bool has_instance_groups = CF_EXPECT(instance_manager_.HasInstanceGroups());
+  CF_EXPECTF(!!has_instance_groups, "{}", NoGroupMessage(request));
+
+  auto instance_group =
+      CF_EXPECT(selector::SelectGroup(instance_manager_, request));
+  std::string android_host_out = instance_group.HostArtifactsPath();
+  std::string home = instance_group.HomeDir();
+  env["HOME"] = home;
+  env[kAndroidHostOut] = android_host_out;
+  const std::string bin_path =
+      absl::StrCat(android_host_out, "/bin/", kHostBugreportBin);
+
+  ConstructCommandParam construct_cmd_param{.bin_path = bin_path,
+                                            .home = home,
+                                            .args = cmd_args,
+                                            .envs = env,
+                                            .working_dir = CurrentDirectory(),
+                                            .command_name = kHostBugreportBin};
+  Command command = CF_EXPECT(ConstructCommand(construct_cmd_param));
+
+  // Wait for the command to finish but ignore the result. The command will fail
+  // for reasons like the device failing to initialize the home directory or
+  // errors during fetch, which are still debuggable states that require a
+  // report.
+  (void)command.Start().Wait();
+
+  auto result = AddFetchLogIfPresent(instance_group, output_file);
+  if (!result.has_value()) {
+    LOG(ERROR) << "Failed to add fetch log to bugreport: " << result.error();
+  }
+
+  return {};
+}
+
+std::vector<std::string> CvdBugreportCommandHandler::CmdList() const {
+  return {"bugreport", "host_bugreport", "cvd_host_bugreport"};
+}
+
+std::string CvdBugreportCommandHandler::SummaryHelp() const {
+  return kSummaryHelpText;
+}
+
+bool CvdBugreportCommandHandler::RequiresDeviceExists() const { return true; }
+
+Result<std::string> CvdBugreportCommandHandler::DetailedHelp(
+    const CommandRequest& request) {
+  Command command = CF_EXPECT(ConstructSiblingHelpCommand(
+      kHostBugreportBin, request.Env(), request.SubcommandArguments()));
+  std::string stdout;
+  std::string stderr;
+  int res = RunWithManagedStdio(std::move(command), nullptr, &stdout, &stderr);
+  // gflags returns exit code 1 when --help is given
+  if (res != 0 && res != 1) {
+    std::cerr << stderr;
+    return CF_ERRF("Failed to execute bugreport binary, exit code: {}", res);
+  }
+  return stdout;
+}
+
+}  // namespace cuttlefish

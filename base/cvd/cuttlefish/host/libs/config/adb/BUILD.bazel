@@ -1,0 +1,45 @@
+load("//cuttlefish/bazel:rules.bzl", "cf_cc_library", "cf_cc_test")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_cc_library(
+    name = "adb",
+    srcs = [
+        "config.cpp",
+        "data.cpp",
+        "flags.cpp",
+        "launch.cpp",
+        "strings.cpp",
+    ],
+    hdrs = ["adb.h"],
+    deps = [
+        "//cuttlefish/common/libs/utils:container",
+        "//cuttlefish/flag_parser",
+        "//cuttlefish/host/commands/kernel_log_monitor:kernel_log_server",
+        "//cuttlefish/host/libs/config:config_flag",
+        "//cuttlefish/host/libs/config:config_fragment",
+        "//cuttlefish/host/libs/config:cuttlefish_config",
+        "//cuttlefish/host/libs/config:known_paths",
+        "//cuttlefish/host/libs/feature",
+        "//cuttlefish/process:command",
+        "//cuttlefish/result",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/strings",
+        "@fruit",
+        "@jsoncpp",
+    ],
+)
+
+cf_cc_test(
+    name = "adb_test",
+    srcs = ["test.cpp"],
+    deps = [
+        ":adb",
+        "//cuttlefish/host/libs/config:config_flag",
+        "//cuttlefish/host/libs/feature",
+        "//cuttlefish/result:result_matchers",
+        "@fruit",
+    ],
+)

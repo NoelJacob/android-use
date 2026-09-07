@@ -1,0 +1,63 @@
+load("//:build_variables.bzl", "COPTS")
+load("//cuttlefish/bazel:rules.bzl", "cf_build_test", "cf_cc_library")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_build_test(name = "utils_build_test")
+
+cf_cc_library(
+    name = "common",
+    srcs = ["common.cpp"],
+    hdrs = ["common.h"],
+    copts = COPTS + ["-Werror=sign-compare"],
+    deps = [
+        "//cuttlefish/common/libs/utils:files",
+        "//cuttlefish/files:directory_exists",
+        "//cuttlefish/files:file_exists",
+        "//cuttlefish/files:is_directory_empty",
+        "//cuttlefish/host/libs/config:config_utils",
+        "//cuttlefish/result",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:str_format",
+        "@fmt",
+    ],
+)
+
+cf_cc_library(
+    name = "flags_collector",
+    srcs = ["flags_collector.cpp"],
+    hdrs = ["flags_collector.h"],
+    copts = COPTS + ["-Werror=sign-compare"],
+    deps = [
+        "@abseil-cpp//absl/log",
+        "@tinyxml2",
+    ],
+)
+
+cf_cc_library(
+    name = "interrupt_listener",
+    srcs = ["interrupt_listener.cpp"],
+    hdrs = ["interrupt_listener.h"],
+    copts = COPTS + ["-Werror=sign-compare"],
+    deps = [
+        "//cuttlefish/common/libs/utils:signals",
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/log:check",
+    ],
+)
+
+cf_cc_library(
+    name = "subprocess_waiter",
+    srcs = ["subprocess_waiter.cpp"],
+    hdrs = ["subprocess_waiter.h"],
+    copts = COPTS + ["-Werror=sign-compare"],
+    deps = [
+        "//cuttlefish/process:command",
+        "//cuttlefish/process:subprocess",
+        "//cuttlefish/result",
+    ],
+)

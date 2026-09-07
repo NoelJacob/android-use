@@ -1,0 +1,125 @@
+cuttlefish-container (1.58.0) UNRELEASED; urgency=medium
+
+  * 
+
+ -- Cody Schuffelen <schuffelen@google.com>  Fri, 28 Aug 2026 15:30:00 -0700
+
+cuttlefish-container (1.57.0) unstable; urgency=medium
+
+  * Mark release 1.56.0 as unstable by @Databean in https://github.com/google/android-cuttlefish/pull/2767
+  * Start development on 1.57 by @Databean in https://github.com/google/android-cuttlefish/pull/2768
+  * Podcvd supports cache subcommand by @0405ysj in https://github.com/google/android-cuttlefish/pull/2748
+  * Podcvd shows converted operator port on JSON output properly by @0405ysj in https://github.com/google/android-cuttlefish/pull/2782
+  * Fix bugs around podcvd dealing with containers at exited status by @0405ysj in https://github.com/google/android-cuttlefish/pull/2783
+  * Update podcvd skill with more richer context by @0405ysj in https://github.com/google/android-cuttlefish/pull/2813
+  * Move podcvd skill under `skills/<skill_name>/SKILL.md` by @0405ysj in https://github.com/google/android-cuttlefish/pull/2854
+  * Reduce the number of nginx worker processes in container by @0405ysj in https://github.com/google/android-cuttlefish/pull/2856
+  * Support ps subcommand on podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2814
+  * Podcvd: Support trusted TLS for operator on container instances by @0405ysj in https://github.com/google/android-cuttlefish/pull/2819
+  * Sort result by GroupName for ExecOnAllCuttlefishHosts by @k311093 in https://github.com/google/android-cuttlefish/pull/3040
+  * Disable preparing cert for operator on podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/3042
+  * Podcvd: Enable cert setup logic again with moving a part of it into postinst by @0405ysj in https://github.com/google/android-cuttlefish/pull/3050
+  * Podcvd can pass CVD_INVOKER env variable to cvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/3049
+
+ -- Cody Schuffelen <schuffelen@google.com>  Fri, 28 Aug 2026 14:22:41 -0700
+
+cuttlefish-container (1.56.0) unstable; urgency=medium
+
+  * Add mesa-vulkan-drivers as dependency of cuttlefish container by @0405ysj in https://github.com/google/android-cuttlefish/pull/2708
+  * Support podcvd load by @0405ysj in https://github.com/google/android-cuttlefish/pull/2706
+  * podcvd supports GPU acceleration by @0405ysj in https://github.com/google/android-cuttlefish/pull/2709
+  * Podcvd can deal with local path on canonical configuration file by @0405ysj in https://github.com/google/android-cuttlefish/pull/2740
+  * Way of downloading debs on container should be compatible to trixie by @0405ysj in https://github.com/google/android-cuttlefish/pull/2754
+  * Upload podcvd E2E test logs as artifact by @0405ysj in https://github.com/google/android-cuttlefish/pull/2755
+
+ -- Cody Schuffelen <schuffelen@google.com>  Thu, 25 Jun 2026 18:11:41 -0700
+
+cuttlefish-container (1.55.0) unstable; urgency=medium
+
+  * Start development on v1.55. by @3405691582 in https://github.com/google/android-cuttlefish/pull/2630
+  * Make execution of `podcvd-setup` with sudo permision being available. by @0405ysj in https://github.com/google/android-cuttlefish/pull/2619
+  * Resolve filesystem isolation issue on podcvd bugreport by @0405ysj in https://github.com/google/android-cuttlefish/pull/2612
+  * Show progress when pulling podman image by @0405ysj in https://github.com/google/android-cuttlefish/pull/2620
+  * podcvd help start/bugreport doesn't need cvd host package anymore by @0405ysj in https://github.com/google/android-cuttlefish/pull/2613
+  * Podcvd supports logs subcommand by @0405ysj in https://github.com/google/android-cuttlefish/pull/2632
+  * podcvd support lint subcommand by @0405ysj in https://github.com/google/android-cuttlefish/pull/2636
+  * Ensure vhost_net and vhost_vsock exists before triggering udev action by @0405ysj in https://github.com/google/android-cuttlefish/pull/2669
+  * podcvd uses podman CLI rather than docker golang SDK by @0405ysj in https://github.com/google/android-cuttlefish/pull/2659
+  * Add acl as dependency of cuttlefish-podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2672
+  * Mark v1.54 as stable. by @3405691582 in https://github.com/google/android-cuttlefish/pull/2677
+  * podcvd supports monitor/setup subcommand by @0405ysj in https://github.com/google/android-cuttlefish/pull/2676
+
+ -- Ram Muthiah <rammuthiah@google.com>  Fri, 12 Jun 2026 02:47:17 +0100
+
+cuttlefish-container (1.54.0) stable; urgency=medium
+
+  * Start development on 1.54.0 by @cjreynol in https://github.com/google/android-cuttlefish/pull/2455
+  * Add crun as dependency of cuttlefish-podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2458
+  * Introduce bsdtar wrapper to fix bsdtar issue on podcvd fetch by @0405ysj in https://github.com/google/android-cuttlefish/pull/2465
+  * Expose CF home dir via rw bind mount of container instance on podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2466
+  * Update dependency of cuttlefish-podcvd to use podman(>=4.4) for pasta by @0405ysj in https://github.com/google/android-cuttlefish/pull/2475
+  * Expose operator into another port of the host to avoid port collision by @0405ysj in https://github.com/google/android-cuttlefish/pull/2525
+  * Refactor podcvd setup procedure by @jemoreira in https://github.com/google/android-cuttlefish/pull/2524
+  * Introduce skill of podcvd, and prepare deprecation of MCP server by @0405ysj in https://github.com/google/android-cuttlefish/pull/2556
+  * Remove Cuttlefish MCP server, as podcvd skill can do the role by @0405ysj in https://github.com/google/android-cuttlefish/pull/2565
+  * Map old commands at cvd into actively supported command in podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2570
+  * Add systemd unit file for cuttlefish-podcvd.service by @0405ysj in https://github.com/google/android-cuttlefish/pull/2572
+  * Update podcvd skill, and include more evaluations by @0405ysj in https://github.com/google/android-cuttlefish/pull/2575
+  * feat: support dynamic bind mounting in podcvd by @ikicha in https://github.com/google/android-cuttlefish/pull/2571
+  * Add user to kvm (and cvdnetwork) group when podcvd-setup is executed by @0405ysj in https://github.com/google/android-cuttlefish/pull/2590
+  * Use mirror.gcr.io rather than docker hub for pulling base image by @0405ysj in https://github.com/google/android-cuttlefish/pull/2579
+
+ -- 3405691582 <dsk@google.com>  Thu, 28 May 2026 17:44:17 +0000
+
+cuttlefish-container (1.53.0) unstable; urgency=medium
+
+  * Mark 1.52 as stable by @Databean in
+    https://github.com/google/android-cuttlefish/pull/2449
+  * Podcvd uses proper container image version, based on version itself
+    by @0405ysj in https://github.com/google/android-
+    cuttlefish/pull/2439
+  * Move container image creation code into dedicated subdir by @0405ysj
+    in https://github.com/google/android-cuttlefish/pull/2430
+  * Start development on 1.53.0 by @Databean in
+    https://github.com/google/android-cuttlefish/pull/2414
+  * Mark release 1.51 as stable by @jemoreira in
+    https://github.com/google/android-cuttlefish/pull/2410
+
+ -- Chad Reynolds <chadreynolds@google.com>  Thu, 23 Apr 2026 15:10:58 -0700
+
+cuttlefish-container (1.52.0) stable; urgency=medium
+
+  * Do not filter containers when allContainers is set by @0405ysj in https://github.com/google/android-cuttlefish/pull/2388
+  * Fix `podcvd create` to deal with parallel execution properly by @0405ysj in https://github.com/google/android-cuttlefish/pull/2389
+
+ -- Cody Schuffelen <schuffelen@google.com>  Thu, 16 Apr 2026 14:16:04 -0700
+
+cuttlefish-container (1.51.0) stable; urgency=medium
+
+  * Add tools on cuttlefish_mcp_server, but executing podcvd directly by @0405ysj in https://github.com/google/android-cuttlefish/pull/2338
+  * Fixes some bugs around container lifecycle on podcvd by @0405ysj in https://github.com/google/android-cuttlefish/pull/2341
+  * Isolate Cuttlefish instance groups between AI agents on CF MCP server by @0405ysj in https://github.com/google/android-cuttlefish/pull/2351
+
+ -- Jorge Moreira <jemoreira@google.com>  Thu, 16 Apr 2026 10:15:45 -0700
+
+cuttlefish-container (1.50.0) unstable; urgency=medium
+
+  * Initial implementation of Cuttlefish MCP server by @0405ysj in https://github.com/google/android-cuttlefish/pull/2277
+  * podcvd clear deletes container though it failed to disconnect adb by @0405ysj in https://github.com/google/android-cuttlefish/pull/2329
+  * Support podcvd start/bugreport --help by @0405ysj in https://github.com/google/android-cuttlefish/pull/2330
+
+ -- 3405691582 <dsk@google.com>  Thu, 02 Apr 2026 13:52:47 +0000
+
+cuttlefish-container (1.49.0) unstable; urgency=medium
+
+  * Start development on v1.49 by @rmuthiah in https://github.com/google/android-cuttlefish/pull/2299
+  * Modify cuttlefish-podcvd-prerequisites.sh by @0405ysj in https://github.com/google/android-cuttlefish/pull/2305
+  * Resolve version mismatch between debian versions by @0405ysj in https://github.com/google/android-cuttlefish/pull/2306
+
+ -- Sergio Rodriguez <sorama@google.com>  Fri, 27 Mar 2026 16:46:10 -0400
+
+cuttlefish-container (1.46.0) unstable; urgency=medium
+
+  * Initial version
+
+ -- Seungjae Yoo <seungjaeyoo@google.com>  Tue, 24 Mar 2026 13:36:23 +0900

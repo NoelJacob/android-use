@@ -1,0 +1,29 @@
+### These are turned off so we can submit shellcheck without breaking the presubmit. They should be fixed eventually.
+
+# Warning: 'Prefer [ p ] && [ q ] as [ p -a q ] is not well-defined.'
+# Reason:
+disable=SC2166
+
+# Warning: 'var is referenced but not assigned.'
+# Reason:
+disable=SC2154
+
+## Style:
+# Style: '$`/`${}` is unnecessary on arithmetic variables.'
+# Reason:
+disable=SC2004
+
+### These are intended to stay disabled:
+
+# Warning: 'In POSIX sh, local is undefined.'
+# Reason: We want 'local' + we don't need to support POSIX sh.
+disable=SC3043
+
+# Info: 'Not following: (error message here)'
+# Reason: No need to lint those paths. This is just an informational message anyways.
+disable=SC1091
+
+## Info:
+# Info: 'Double quote to prevent globbing and word splitting.'
+# Reason: This is an informational message, but either way, removing this disable would be too sweeping a change.
+disable=SC2086

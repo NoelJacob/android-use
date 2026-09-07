@@ -1,0 +1,150 @@
+/*
+ * Copyright (C) 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/cli/commands/display.h"
+
+#include <signal.h>  // IWYU pragma: keep
+#include <stdlib.h>
+
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "absl/strings/str_cat.h"
+
+#include "cuttlefish/common/libs/utils/files.h"
+#include "cuttlefish/flag_parser/flag.h"
+#include "cuttlefish/flag_parser/gflags_compat.h"
+#include "cuttlefish/host/commands/cvd/cli/command_request.h"
+#include "cuttlefish/host/commands/cvd/cli/selector/selector.h"
+#include "cuttlefish/host/commands/cvd/cli/utils.h"
+#include "cuttlefish/host/commands/cvd/instances/instance_manager.h"
+#include "cuttlefish/host/commands/cvd/utils/common.h"
+#include "cuttlefish/process/command.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+namespace {
+
+constexpr char kDisplayBin[] = "cvd_internal_display";
+
+constexpr char kSummaryHelpText[] =
+    R"(Enables hotplug/unplug of displays from running cuttlefish virtual devices)";
+
+constexpr char kDetailedHelpText[] =
+    R"(
+
+usage: cvd display <command> <args>
+
+Commands:
+    help <command>      Print help for a command.
+    add                 Adds a new display to a given device.
+    list                Prints the currently connected displays.
+    remove              Removes a display from a given device.
+    screenshot --display=<id> --screenshot_path=<path>
+                        Captures a screenshot of the given display.
+)";
+
+Result<Command> BuildCommand(
+    InstanceManager& instance_manager, const CommandRequest& request,
+    std::vector<std::string>& subcmd_args,
+    std::unordered_map<std::string, std::string> envs) {
+  // test if there is --instance_num flag
+  int instance_num = -1;
+  Flag instance_num_flag = GflagsCompatFlag("instance_num", instance_num);
+
+  CF_EXPECT(ConsumeFlags({instance_num_flag}, subcmd_args));
+
+  auto [instance, group] =
+      instance_num >= 0
+          ? CF_EXPECT(instance_manager.FindInstanceWithGroup(
+                {.instance_id = instance_num}))
+          : CF_EXPECT(selector::SelectInstance(instance_manager, request));
+  const auto& home = group.Proto().home_directory();
+
+  const std::string& android_host_out = group.Proto().host_artifacts_path();
+  const std::string cvd_display_bin_path =
+      absl::StrCat(android_host_out, "/bin/", kDisplayBin);
+
+  std::vector<std::string> cvd_env_args{subcmd_args};
+  cvd_env_args.push_back(absl::StrCat("--instance_num=", instance.Id()));
+  envs["HOME"] = home;
+  envs[kAndroidHostOut] = android_host_out;
+  envs[kAndroidSoongHostOut] = android_host_out;
+
+  std::stringstream command_to_issue;
+  std::cerr << "HOME=" << home << " " << kAndroidHostOut << "="
+            << android_host_out << " " << kAndroidSoongHostOut << "="
+            << android_host_out << " " << cvd_display_bin_path << " ";
+  for (const auto& arg : cvd_env_args) {
+    std::cerr << arg << " ";
+  }
+
+  ConstructCommandParam construct_cmd_param{.bin_path = cvd_display_bin_path,
+                                            .home = home,
+                                            .args = cvd_env_args,
+                                            .envs = std::move(envs),
+                                            .working_dir = CurrentDirectory(),
+                                            .command_name = kDisplayBin};
+  Command command = CF_EXPECT(ConstructCommand(construct_cmd_param));
+  return command;
+}
+}  // namespace
+
+CvdDisplayCommandHandler::CvdDisplayCommandHandler(
+    InstanceManager& instance_manager)
+    : instance_manager_{instance_manager} {}
+
+Result<void> CvdDisplayCommandHandler::Handle(const CommandRequest& request) {
+  const std::unordered_map<std::string, std::string>& env = request.Env();
+
+  std::vector<std::string> subcmd_args = request.SubcommandArguments();
+  if (subcmd_args.empty()) {
+    // Also print help when given no arguments
+    std::cerr << kDetailedHelpText;
+    return {};
+  }
+
+  // may modify subcmd_args by consuming in parsing
+  Command command =
+      CF_EXPECT(BuildCommand(instance_manager_, request, subcmd_args, env));
+
+  // NOLINTNEXTLINE(misc-include-cleaner)
+  siginfo_t infop = CF_EXPECT(command.Start().Wait(WEXITED));
+
+  CF_EXPECT(CheckProcessExitedNormally(infop));
+  return {};
+}
+
+std::vector<std::string> CvdDisplayCommandHandler::CmdList() const {
+  return {"display"};
+}
+
+std::string CvdDisplayCommandHandler::SummaryHelp() const {
+  return kSummaryHelpText;
+}
+
+bool CvdDisplayCommandHandler::RequiresDeviceExists() const { return true; }
+
+Result<std::string> CvdDisplayCommandHandler::DetailedHelp(
+    const CommandRequest& request) {
+  return kDetailedHelpText;
+}
+
+}  // namespace cuttlefish

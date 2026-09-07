@@ -1,0 +1,285 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/cli/utils.h"
+
+#include <asm-generic/ioctls.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>  // IWYU pragma: keep: siginfo_t
+#include <stddef.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/strip.h"
+#include "android-base/file.h"
+#include "fmt/format.h"
+#include "fmt/ranges.h"  // NOLINT(misc-include-cleaner): version difference
+
+#include "cuttlefish/ansi_codes/terminal_colors.h"
+#include "cuttlefish/common/libs/fs/fd.h"
+#include "cuttlefish/common/libs/utils/contains.h"
+#include "cuttlefish/common/libs/utils/files.h"
+#include "cuttlefish/common/libs/utils/gflags_xml_parser.h"
+#include "cuttlefish/common/libs/utils/in_sandbox.h"
+#include "cuttlefish/common/libs/utils/users.h"
+#include "cuttlefish/files/file_exists.h"
+#include "cuttlefish/flag_parser/flag.h"
+#include "cuttlefish/host/commands/cvd/cli/command_request.h"
+#include "cuttlefish/host/commands/cvd/instances/config_path.h"
+#include "cuttlefish/host/commands/cvd/utils/common.h"
+#include "cuttlefish/host/libs/config/config_constants.h"
+#include "cuttlefish/process/command.h"
+#include "cuttlefish/process/managed_stdio.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+
+// NOLINTNEXTLINE(misc-include-cleaner): <signal.h>
+Result<void> CheckProcessExitedNormally(siginfo_t infop,
+                                        int expected_exit_code) {
+  // NOLINTNEXTLINE(misc-include-cleaner): <signal.h>
+  if (infop.si_code == CLD_EXITED && infop.si_status == expected_exit_code) {
+    return {};
+  }
+
+  if (infop.si_code == CLD_EXITED) {
+    return CF_ERRF("Exited with code '{}'", infop.si_status);
+  } else if (infop.si_code == CLD_KILLED) {
+    return CF_ERRF("Exited with signal '{}'", infop.si_status);
+  } else {
+    return CF_ERRF("Quit with code '{}'", infop.si_status);
+  }
+}
+
+static Command FixGroupsIfNecessary(const std::string& command_name,
+                                    const std::string& bin_path) {
+#ifndef __linux__
+  return Command(command_name).SetExecutable(bin_path);
+#endif
+  const bool has_net = InSandbox() || InGroup("cvdnetwork");
+  const bool has_kvm = IsKvmAccessible();
+  if (has_net && has_kvm) {
+    return Command(command_name).SetExecutable(bin_path);
+  }
+  const std::string refresh_groups =
+      android::base::GetExecutableDirectory() + "/cvd_refresh_groups";
+  return Command("cvd_refresh_groups")
+      .SetExecutable(refresh_groups)
+      .AddParameter(bin_path)
+      .AddParameter(command_name);
+}
+
+Result<Command> ConstructCommand(const ConstructCommandParam& param) {
+  Command command = FixGroupsIfNecessary(param.command_name, param.bin_path);
+  for (const std::string& arg : param.args) {
+    command.AddParameter(arg);
+  }
+  // Set CuttlefishConfig path based on assembly dir,
+  // used by subcommands when locating the CuttlefishConfig.
+  if (param.envs.count(cuttlefish::kCuttlefishConfigEnvVarName) == 0) {
+    auto config_path = GetCuttlefishConfigPath(param.home);
+    if (config_path.has_value()) {
+      command.AddEnvironmentVariable(cuttlefish::kCuttlefishConfigEnvVarName,
+                                     *config_path);
+    }
+  }
+  for (auto& it : param.envs) {
+    command.UnsetFromEnvironment(it.first);
+    command.AddEnvironmentVariable(it.first, it.second);
+  }
+
+  if (!param.working_dir.empty()) {
+    command.SetWorkingDirectory(CF_EXPECT(
+        Fd::Open(param.working_dir, O_RDONLY | O_PATH | O_DIRECTORY)));
+  }
+  return {std::move(command)};
+}
+
+Result<Command> ConstructCvdHelpCommand(
+    const std::string& bin_file,
+    std::unordered_map<std::string, std::string> envs,
+    const std::vector<std::string>& subcmd_args,
+    const CommandRequest& request) {
+  auto client_pwd = CurrentDirectory();
+  const auto home = (Contains(envs, "HOME") ? envs.at("HOME") : client_pwd);
+  std::unordered_map<std::string, std::string> envs_copy{envs};
+  envs_copy["HOME"] = AbsolutePath(home);
+  auto android_host_out = CF_EXPECT(AndroidHostPath(envs));
+  const auto bin_path = android_host_out + "/bin/" + bin_file;
+  envs_copy[kAndroidHostOut] = android_host_out;
+  envs_copy[kAndroidSoongHostOut] = android_host_out;
+  ConstructCommandParam construct_cmd_param{.bin_path = bin_path,
+                                            .home = home,
+                                            .args = subcmd_args,
+                                            .envs = std::move(envs_copy),
+                                            .working_dir = client_pwd,
+                                            .command_name = bin_file};
+  Command help_command = CF_EXPECT(ConstructCommand(construct_cmd_param));
+  return help_command;
+}
+
+Result<Command> ConstructSiblingHelpCommand(
+    const std::string& bin_name,
+    const std::unordered_map<std::string, std::string>& env,
+    const std::vector<std::string>& subcmd_args) {
+  std::string exec_dir = android::base::GetExecutableDirectory();
+
+  std::string bin_path = exec_dir + "/" + bin_name;
+  CF_EXPECTF(FileExists(bin_path),
+             "Could not find {} in executable directory '{}'", bin_name,
+             exec_dir);
+
+  Command command(bin_name);
+  command.SetExecutable(bin_path);
+  for (const auto& [var, value] : env) {
+    if (var == kAndroidHostOut || var == kAndroidSoongHostOut) {
+      // These variables will cause cvd_internal_start to find the wrong
+      // assemble_cvd binary. $HOME could cause the same problem, but we need
+      // that one to find the correct image paths.
+      continue;
+    }
+    command.AddEnvironmentVariable(var, value);
+  }
+  for (const std::string& arg : subcmd_args) {
+    command.AddParameter(arg);
+  }
+  return command;
+}
+
+Result<Command> ConstructCvdGenericNonHelpCommand(
+    const ConstructNonHelpForm& request_form, const CommandRequest& request) {
+  std::unordered_map<std::string, std::string> envs{request_form.envs};
+  envs["HOME"] = request_form.home;
+  envs[kAndroidHostOut] = request_form.android_host_out;
+  envs[kAndroidSoongHostOut] = request_form.android_host_out;
+  const std::string bin_path = absl::StrCat(request_form.android_host_out,
+                                            "/bin/", request_form.bin_file);
+
+  if (request_form.verbose) {
+    std::stringstream verbose_stream;
+    verbose_stream << "HOME=" << request_form.home << " ";
+    verbose_stream << kAndroidHostOut << "=" << envs.at(kAndroidHostOut) << " "
+                   << kAndroidSoongHostOut << "="
+                   << envs.at(kAndroidSoongHostOut) << " ";
+    verbose_stream << bin_path << "\\" << std::endl;
+    for (const auto& cmd_arg : request_form.cmd_args) {
+      verbose_stream << cmd_arg << " ";
+    }
+    if (!request_form.cmd_args.empty()) {
+      // remove trailing " ", and add a new line
+      verbose_stream.seekp(-1, std::ios_base::end);
+      verbose_stream << std::endl;
+    }
+    std::cerr << verbose_stream.rdbuf();
+  }
+  ConstructCommandParam construct_cmd_param{
+      .bin_path = bin_path,
+      .home = request_form.home,
+      .args = request_form.cmd_args,
+      .envs = envs,
+      .working_dir = CurrentDirectory(),
+      .command_name = request_form.bin_file};
+  return CF_EXPECT(ConstructCommand(construct_cmd_param));
+}
+
+Result<std::vector<Flag>> GetSiblingCommandFlags(
+    const std::string& bin_name,
+    const std::unordered_map<std::string, std::string>& env,
+    std::vector<std::string> args) {
+  // Remove help-like flags to ensure --helpxml takes effect
+  std::erase_if(args, [](std::string_view arg) {
+    if (!absl::ConsumePrefix(&arg, "-")) {
+      // Must have at least one "-"
+      return false;
+    }
+    // May have another "-"
+    (void)absl::ConsumePrefix(&arg, "-");
+    return arg.starts_with("help") || arg == "version" || arg == "h";
+  });
+  args.emplace_back("-helpxml");
+  Command command = CF_EXPECT(ConstructSiblingHelpCommand(bin_name, env, args));
+  std::string stdout;
+  std::string stderr;
+  int res = RunWithManagedStdio(std::move(command), nullptr, &stdout, &stderr);
+  // gflags returns exit code 1 when --help is given
+  if (res != 0 && res != 1) {
+    return CF_ERRF("Failed to execute start binary, exit code: {}, stderr: {}",
+                   res, stderr);
+  }
+  std::vector<GflagDescription> gflag_descs =
+      CF_EXPECT(ParseGflagsXmlHelp(stdout));
+  std::vector<Flag> flags;
+  for (const GflagDescription& desc : gflag_descs) {
+    if (desc.name != "help" &&
+        android::base::Basename(desc.file).starts_with("gflags")) {
+      // Skip gflags-specific flags. Reporting these flags is quite noisy and
+      // adds little to no value in the context of cvd.
+      continue;
+    }
+    flags
+        .emplace_back(desc.type.starts_with("bool")
+                          ? Flag::BoolFlag(desc.name)
+                          : Flag::StringFlag(desc.name))
+        // Add setter and getter that won't crash
+        .Setter([](std::string_view) -> Result<void> { return {}; })
+        // The getter always returns the current value reported by the internal
+        // binary so the help message is accurate.
+        .Getter([value = desc.current_value]() { return value; })
+        .Help(desc.meaning);
+  }
+  return flags;
+}
+
+std::string NoGroupMessage(const CommandRequest& request) {
+  TerminalColors colors(isatty(1));
+  return fmt::format("{}Command `{}{}{}{}` is not applicable: {}{}{}",
+                     colors.Reset(), colors.Red(), request.Subcommand(),
+                     fmt::join(request.SubcommandArguments(), " "),
+                     colors.Reset(), colors.BoldRed(), "no devices present",
+                     colors.Reset());
+}
+
+Result<TerminalSize> GetTerminalSize() {
+  struct winsize w;
+  CF_EXPECT(ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) != -1,
+            "Failed to get terminal size: " << strerror(errno));
+  return TerminalSize{.rows = w.ws_row, .columns = w.ws_col};
+}
+
+std::vector<std::string> ExpandProductPaths(const std::string& product_path,
+                                            size_t num_instances) {
+  const std::vector<std::string_view> split = absl::StrSplit(product_path, ',');
+  std::vector<std::string> expanded;
+  expanded.reserve(num_instances);
+  for (size_t i = 0; i < num_instances; i++) {
+    expanded.emplace_back(i < split.size() ? split[i] : split[0]);
+  }
+  return expanded;
+}
+
+}  // namespace cuttlefish

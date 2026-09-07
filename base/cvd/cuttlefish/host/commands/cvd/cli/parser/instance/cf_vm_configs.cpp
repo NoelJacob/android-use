@@ -1,0 +1,298 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "cuttlefish/host/commands/cvd/cli/parser/instance/cf_vm_configs.h"
+
+#include <stdint.h>
+
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "google/protobuf/util/json_util.h"
+
+#include "cuttlefish/common/libs/utils/flags_validator.h"
+#include "cuttlefish/host/commands/assemble_cvd/flags_defaults.h"
+#include "cuttlefish/host/commands/cvd/cli/parser/cf_configs_common.h"
+#include "cuttlefish/host/commands/cvd/cli/parser/load_config.pb.h"
+#include "cuttlefish/result/result.h"
+
+#define UI_DEFAULTS_MEMORY_MB 2048
+
+namespace cuttlefish {
+namespace {
+
+using cvd::config::EnvironmentSpecification;
+using cvd::config::Instance;
+using cvd::config::Vm;
+
+inline constexpr char kFlagVmManager[] = "vm_manager";
+inline constexpr char kFlagCpus[] = "cpus";
+inline constexpr char kFlagMemoryMb[] = "memory_mb";
+inline constexpr char kFlagUseSdcard[] = "use_sdcard";
+inline constexpr char kFlagSetupWizardMode[] = "setupwizard_mode";
+inline constexpr char kFlagUuid[] = "uuid";
+inline constexpr char kFlagEnableSandbox[] = "enable_sandbox";
+inline constexpr char kFlagCrosvmSimpleMediaDevice[] =
+    "crosvm_simple_media_device";
+inline constexpr char kFlagCrosvmV4l2Proxy[] = "crosvm_v4l2_proxy";
+inline constexpr char kFlagVhostUserVsock[] = "vhost_user_vsock";
+inline constexpr char kFlagEnablePkvm[] = "enable_pkvm";
+
+std::set<std::string> GatherFlagNamesUsedInInstanceConfig(const Instance& ins) {
+  std::set<std::string> names;
+  if (ins.has_vm()) {
+    names.insert(kFlagVmManager);
+  }
+  if (ins.vm().has_cpus()) {
+    names.insert(kFlagCpus);
+  }
+  if (ins.vm().has_memory_mb()) {
+    names.insert(kFlagMemoryMb);
+  }
+  if (ins.vm().has_use_sdcard()) {
+    names.insert(kFlagUseSdcard);
+  }
+  if (ins.vm().has_setupwizard_mode()) {
+    names.insert(kFlagSetupWizardMode);
+  }
+  if (ins.vm().has_uuid()) {
+    names.insert(kFlagUuid);
+  }
+  if (ins.vm().vmm_case() == Vm::VmmCase::kCrosvm &&
+      ins.vm().crosvm().has_enable_sandbox()) {
+    names.insert(kFlagEnableSandbox);
+  }
+  if (ins.vm().vmm_case() == Vm::VmmCase::kCrosvm &&
+      ins.vm().crosvm().has_simple_media_device()) {
+    names.insert(kFlagCrosvmSimpleMediaDevice);
+  }
+  if (ins.vm().vmm_case() == Vm::VmmCase::kCrosvm &&
+      ins.vm().crosvm().has_v4l2_proxy()) {
+    names.insert(kFlagCrosvmV4l2Proxy);
+  }
+  if (ins.vm().vmm_case() == Vm::VmmCase::kCrosvm &&
+      ins.vm().crosvm().has_vhost_user_vsock()) {
+    names.insert(kFlagVhostUserVsock);
+  }
+  if (ins.vm().has_enable_pkvm()) {
+    names.insert(kFlagEnablePkvm);
+  }
+  return names;
+}
+
+std::set<std::string> GatherFlagNamesUsedInEnvironmentConfig(
+    const EnvironmentSpecification& cfg) {
+  std::set<std::string> names;
+  for (const auto& ins : cfg.instances()) {
+    names.merge(GatherFlagNamesUsedInInstanceConfig(ins));
+  }
+  return names;
+}
+
+}  // namespace
+
+using cvd::config::EnvironmentSpecification;
+using cvd::config::Instance;
+using cvd::config::Vm;
+using google::protobuf::util::JsonPrintOptions;
+using google::protobuf::util::MessageToJsonString;
+
+static std::string VmManager(const Instance& instance) {
+  const auto& vm = instance.vm();
+  switch (vm.vmm_case()) {
+    case Vm::VmmCase::kCrosvm:
+    default:
+      return "crosvm";
+    case Vm::VmmCase::kGem5:
+      return "gem5";
+    case Vm::VmmCase::kQemu:
+      return "qemu_cli";
+  }
+}
+
+static uint32_t Cpus(const Instance& instance) {
+  if (instance.vm().has_cpus()) {
+    return instance.vm().cpus();
+  } else {
+    return CF_DEFAULTS_CPUS;
+  }
+}
+
+static uint32_t MemoryMb(const Instance& instance) {
+  if (instance.vm().has_memory_mb()) {
+    return instance.vm().memory_mb();
+  } else {
+    return UI_DEFAULTS_MEMORY_MB;
+  }
+}
+
+static bool UseSdcard(const Instance& instance) {
+  if (instance.vm().has_use_sdcard()) {
+    return instance.vm().use_sdcard();
+  } else {
+    return CF_DEFAULTS_USE_SDCARD;
+  }
+}
+
+static Result<std::string> SetupWizardMode(const Instance& instance) {
+  if (instance.vm().has_setupwizard_mode()) {
+    CF_EXPECT(ValidateSetupWizardMode(instance.vm().setupwizard_mode()));
+    return instance.vm().setupwizard_mode();
+  } else {
+    return CF_DEFAULTS_SETUPWIZARD_MODE;
+  }
+}
+
+static std::string Uuid(const Instance& instance) {
+  if (instance.vm().has_uuid()) {
+    return instance.vm().uuid();
+  } else {
+    return CF_DEFAULTS_UUID;
+  }
+}
+
+static bool EnableSandbox(const Instance& instance) {
+  const auto& crosvm = instance.vm().crosvm();
+  const auto& default_val = CF_DEFAULTS_ENABLE_SANDBOX;
+  return crosvm.has_enable_sandbox() ? crosvm.enable_sandbox() : default_val;
+}
+
+static bool SimpleMediaDevice(const Instance& instance) {
+  const auto& crosvm = instance.vm().crosvm();
+  const auto& default_val = CF_DEFAULTS_CROSVM_SIMPLE_MEDIA_DEVICE;
+  return crosvm.has_simple_media_device() ? crosvm.simple_media_device()
+                                          : default_val;
+}
+
+static std::string V4l2Proxy(const Instance& instance) {
+  const auto& crosvm = instance.vm().crosvm();
+  const auto& default_val = CF_DEFAULTS_CROSVM_V4L2_PROXY;
+  return crosvm.has_v4l2_proxy() ? crosvm.v4l2_proxy() : default_val;
+}
+
+static std::string VhostUserVsock(const Instance& instance) {
+  const auto& crosvm = instance.vm().crosvm();
+  const auto& default_val = CF_DEFAULTS_VHOST_USER_VSOCK;
+  return crosvm.has_vhost_user_vsock() ? crosvm.vhost_user_vsock()
+                                       : default_val;
+}
+
+static bool EnablePkvm(const Instance& instance) {
+  const auto& vm = instance.vm();
+  return vm.has_enable_pkvm() ? vm.enable_pkvm() : CF_DEFAULTS_ENABLE_PKVM;
+}
+
+static std::vector<std::string> UserPageSize(
+    const EnvironmentSpecification& cfg) {
+  std::vector<std::string> ret;
+  for (const auto& instance : cfg.instances()) {
+    if (instance.vm().has_page_size()) {
+      if (instance.vm().page_size() == cvd::config::USER_PAGE_SIZE_16KB) {
+        ret.emplace_back("--extra_kernel_cmdline=page_shift=14");
+        return ret;
+      } else if (instance.vm().page_size() ==
+                 cvd::config::USER_PAGE_SIZE_64KB) {
+        ret.emplace_back("--extra_kernel_cmdline=page_shift=16");
+        return ret;
+      }
+    }
+  }
+
+  return ret;
+}
+
+static Result<std::optional<std::string>> CustomConfigsFlagValue(
+    const Instance& instance) {
+  if (instance.vm().custom_actions().empty()) {
+    return std::nullopt;
+  }
+  std::vector<std::string> json_entries;
+  for (const auto& action : instance.vm().custom_actions()) {
+    std::string json;
+    JsonPrintOptions print_opts;
+    print_opts.preserve_proto_field_names = true;
+    auto to_json_res = MessageToJsonString(action, &json, print_opts);
+    CF_EXPECTF(to_json_res.ok(), "{}", to_json_res.ToString());
+    json_entries.emplace_back(std::move(json));
+  }
+  return fmt::format("[{}]", fmt::join(json_entries, ","));
+}
+
+static Result<std::vector<std::string>> CustomConfigsFlags(
+    const EnvironmentSpecification& cfg) {
+  std::vector<std::string> ret;
+  for (const auto& instance : cfg.instances()) {
+    std::optional<std::string> opt =
+        CF_EXPECT(CustomConfigsFlagValue(instance));
+    if (opt.has_value()) {
+      ret.emplace_back(fmt::format("--custom_actions={}", opt.value()));
+    }
+  }
+  return ret;
+}
+
+Result<std::vector<std::string>> GenerateVmFlags(
+    const EnvironmentSpecification& cfg) {
+  std::set<std::string> used_names =
+      GatherFlagNamesUsedInEnvironmentConfig(cfg);
+  std::vector<std::string> flags = {};
+  if (used_names.contains(kFlagVmManager)) {
+    flags.push_back(GenerateInstanceFlag(kFlagVmManager, cfg, VmManager));
+  }
+  if (used_names.contains(kFlagCpus)) {
+    flags.push_back(GenerateInstanceFlag(kFlagCpus, cfg, Cpus));
+  }
+  if (used_names.contains(kFlagMemoryMb)) {
+    flags.push_back(GenerateInstanceFlag(kFlagMemoryMb, cfg, MemoryMb));
+  }
+  if (used_names.contains(kFlagUseSdcard)) {
+    flags.push_back(GenerateInstanceFlag(kFlagUseSdcard, cfg, UseSdcard));
+  }
+  if (used_names.contains(kFlagSetupWizardMode)) {
+    flags.push_back(CF_EXPECT(
+        ResultInstanceFlag(kFlagSetupWizardMode, cfg, SetupWizardMode)));
+  }
+  if (used_names.contains(kFlagUuid)) {
+    flags.push_back(GenerateInstanceFlag(kFlagUuid, cfg, Uuid));
+  }
+  if (used_names.contains(kFlagEnableSandbox)) {
+    flags.push_back(
+        GenerateInstanceFlag(kFlagEnableSandbox, cfg, EnableSandbox));
+  }
+  if (used_names.contains(kFlagCrosvmSimpleMediaDevice)) {
+    flags.push_back(GenerateInstanceFlag(kFlagCrosvmSimpleMediaDevice, cfg,
+                                         SimpleMediaDevice));
+  }
+  if (used_names.contains(kFlagCrosvmV4l2Proxy)) {
+    flags.emplace_back(
+        GenerateInstanceFlag(kFlagCrosvmV4l2Proxy, cfg, V4l2Proxy));
+  }
+  if (used_names.contains(kFlagVhostUserVsock)) {
+    flags.emplace_back(
+        GenerateInstanceFlag(kFlagVhostUserVsock, cfg, VhostUserVsock));
+  }
+  if (used_names.contains(kFlagEnablePkvm)) {
+    flags.emplace_back(GenerateInstanceFlag(kFlagEnablePkvm, cfg, EnablePkvm));
+  }
+
+  flags = MergeResults(std::move(flags), CF_EXPECT(CustomConfigsFlags(cfg)));
+  flags = MergeResults(std::move(flags), UserPageSize(cfg));
+
+  return flags;
+}
+
+}  // namespace cuttlefish

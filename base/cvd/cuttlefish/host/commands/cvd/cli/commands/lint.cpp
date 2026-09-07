@@ -1,0 +1,78 @@
+/*
+ * Copyright (C) 2023 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/cli/commands/lint.h"
+
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "cuttlefish/flag_parser/flag.h"
+#include "cuttlefish/host/commands/cvd/cli/command_request.h"
+#include "cuttlefish/host/commands/cvd/cli/parser/load_configs_parser.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+namespace {
+
+constexpr char kLintSubCmd[] = "lint";
+
+constexpr char kSummaryHelpText[] =
+    R"(error checks the input virtual device json config file)";
+
+constexpr char kDetailedHelpText[] = R"(
+
+Error check of the virtual device json config file.
+
+Usage: cvd lint /path/to/input.json
+)";
+
+}  // namespace
+
+Result<void> LintCommandHandler::Handle(const CommandRequest& request) {
+  std::vector<std::string> args = request.SubcommandArguments();
+  const auto config_path = CF_EXPECT(ValidateConfig(args));
+
+  std::cout << "Lint of flags and config \"" << config_path << "\" succeeded\n";
+
+  return {};
+}
+
+std::vector<std::string> LintCommandHandler::CmdList() const {
+  return {kLintSubCmd};
+}
+
+std::string LintCommandHandler::SummaryHelp() const { return kSummaryHelpText; }
+
+Result<std::string> LintCommandHandler::DetailedHelp(
+    const CommandRequest& request) {
+  return kDetailedHelpText;
+}
+
+Result<std::string> LintCommandHandler::ValidateConfig(
+    std::vector<std::string>& args) {
+  LoadFlags load_flags;
+  std::vector<Flag> flags = BuildCvdLoadFlags(load_flags);
+  CF_EXPECT(ConsumeFlags(flags, args));
+  CF_EXPECT(
+      !args.empty(),
+      "No arguments provided to cvd command, please provide path to json file");
+  std::string& config_path = args.front();
+  CF_EXPECT(GetEnvironmentSpecification(config_path, load_flags.overrides));
+  return config_path;
+}
+
+}  // namespace cuttlefish

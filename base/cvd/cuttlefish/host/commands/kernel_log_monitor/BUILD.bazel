@@ -1,0 +1,56 @@
+load("//cuttlefish/bazel:rules.bzl", "cf_build_test", "cf_cc_binary", "cf_cc_library")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_build_test(name = "kernel_log_monitor_build_test")
+
+cf_cc_binary(
+    name = "kernel_log_monitor",
+    srcs = ["main.cc"],
+    deps = [
+        "//cuttlefish/common/libs/fs",
+        "//cuttlefish/host/commands/kernel_log_monitor:kernel_log_server",
+        "//cuttlefish/host/commands/kernel_log_monitor:utils",
+        "//cuttlefish/host/libs/config:config_instance_derived",
+        "//cuttlefish/host/libs/config:cuttlefish_config",
+        "//cuttlefish/host/libs/config:logging",
+        "//cuttlefish/host/libs/log_names",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/log:check",
+        "@abseil-cpp//absl/strings",
+        "@gflags",
+        "@jsoncpp",
+    ],
+)
+
+cf_cc_library(
+    name = "kernel_log_server",
+    srcs = ["kernel_log_server.cc"],
+    hdrs = ["kernel_log_server.h"],
+    deps = [
+        "//cuttlefish/common/libs/fs",
+        "//cuttlefish/host/libs/config:config_constants",
+        "//cuttlefish/host/libs/config:cuttlefish_config",
+        "//cuttlefish/result:result_type",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/strings",
+        "@jsoncpp",
+    ],
+)
+
+cf_cc_library(
+    name = "utils",
+    srcs = ["utils.cc"],
+    hdrs = ["utils.h"],
+    deps = [
+        "//cuttlefish/common/libs/fs",
+        "//cuttlefish/common/libs/utils:json",
+        "//cuttlefish/host/commands/kernel_log_monitor:kernel_log_server",
+        "//cuttlefish/result:expect",
+        "//cuttlefish/result:result_type",
+        "@abseil-cpp//absl/log",
+        "@jsoncpp",
+    ],
+)

@@ -1,0 +1,88 @@
+# Container image for running CF instances in the server.
+# Container image includes HO(Host Orchestrator) inside,
+# so it could execute CF instance with API in HO.
+
+ARG BUILD_OPTION=prod
+
+
+FROM mirror.gcr.io/library/debian:13 AS runner-base
+
+# Expose Operator Port (HTTP:1080, HTTPS:1443)
+EXPOSE 1080 1443
+# Expose HO(Host Orchestrator) Port (HTTP:2080, HTTPS:2443)
+EXPOSE 2080 2443
+# Expose WebRTC Port
+EXPOSE 15550-15560
+# Expose ADB Port
+# Corresponding ADB port for CF instance is, 6520+instance_num-1.
+EXPOSE 6520-6620
+# to make sure this file always exist
+RUN touch /.dockerenv
+
+USER root
+WORKDIR /root
+RUN set -x
+RUN apt update
+RUN apt install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    default-jre-headless \
+    libvulkan1 \
+    mesa-utils \
+    nginx \
+    sudo
+RUN update-ca-certificates
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+
+# When setting `auto` value, nginx spawns worker processes as the number of CPU
+# cores. It's discouraged in any multiple container scenarios, as it spawns too
+# much worker processes in huge machines, but not actually required.
+RUN sed -i 's/worker_processes auto;/worker_processes 2;/' \
+    /etc/nginx/nginx.conf
+# When setting `auto` value, nginx select which CPU core executing worker
+# processes. It's discouraged in any multiple container scenarios, as all
+# containers may use CPU core `0`-`N` when `worker_processes` is set as `N+1`.
+# When setting no values, OS scheduler manages it instead.
+RUN sed -i 's/worker_cpu_affinity auto;/# worker_cpu_affinity auto;/' \
+    /etc/nginx/nginx.conf
+
+COPY ./container/image/guest/run_services.sh /root/
+RUN chmod +x /root/run_services.sh
+
+
+FROM runner-base AS runner-dev
+
+COPY cuttlefish-*.deb /root/debian/
+RUN apt install -y --no-install-recommends -f \
+    /root/debian/cuttlefish-base_*.deb \
+    /root/debian/cuttlefish-user_*.deb \
+    /root/debian/cuttlefish-orchestration_*.deb
+
+
+FROM runner-base AS runner-prod
+
+ARG REPO
+RUN install -m 0755 -d /etc/apt/keyrings
+RUN curl -fsSL https://us-apt.pkg.dev/doc/repo-signing-key.gpg -o /etc/apt/keyrings/android-cuttlefish-artifacts.asc
+RUN chmod a+r /etc/apt/keyrings/android-cuttlefish-artifacts.asc
+RUN echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/android-cuttlefish-artifacts.asc] https://us-apt.pkg.dev/projects/android-cuttlefish-artifacts $REPO main" \
+    | tee /etc/apt/sources.list.d/android-cuttlefish-artifacts.list > /dev/null
+RUN apt update
+RUN apt install -y --no-install-recommends \
+    cuttlefish-base \
+    cuttlefish-user \
+    cuttlefish-orchestration
+
+
+FROM runner-${BUILD_OPTION} AS runner
+
+# TODO(b/491256959): Seek better option than introducing wrapper of bsdtar.
+# Add bsdtar wrapper, to avoid owner user/group issue when fetching artifacts.
+RUN dpkg-divert --add --rename --divert /usr/bin/bsdtar.real /usr/bin/bsdtar && \
+    echo '#!/bin/bash' > /usr/bin/bsdtar && \
+    echo '/usr/bin/bsdtar.real --no-same-owner "$@"' >> /usr/bin/bsdtar && \
+    chmod +x /usr/bin/bsdtar
+
+RUN usermod -aG kvm root
+RUN usermod -aG cvdnetwork root
+ENTRYPOINT ["/root/run_services.sh"]

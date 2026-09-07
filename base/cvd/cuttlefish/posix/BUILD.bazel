@@ -1,0 +1,84 @@
+load("//cuttlefish/bazel:rules.bzl", "cf_cc_library")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_cc_library(
+    name = "rename",
+    srcs = ["rename.cc"],
+    hdrs = ["rename.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result",
+    ],
+)
+
+cf_cc_library(
+    name = "strerror",
+    srcs = ["strerror.cc"],
+    hdrs = ["strerror.h"],
+    deps = [
+        "@abseil-cpp//absl/status",
+    ],
+)
+
+cf_cc_library(
+    name = "symlink",
+    srcs = ["symlink.cc"],
+    hdrs = ["symlink.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result",
+    ],
+)
+
+cf_cc_library(
+    name = "readlink",
+    srcs = ["readlink.cc"],
+    hdrs = ["readlink.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result",
+    ],
+)
+
+cf_cc_library(
+    name = "realpath",
+    srcs = ["realpath.cc"],
+    hdrs = ["realpath.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result:expect",
+        "//cuttlefish/result:result_type",
+    ],
+)
+
+cf_cc_library(
+    name = "remove",
+    srcs = ["remove.cc"],
+    hdrs = ["remove.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result:expect",
+        "//cuttlefish/result:result_type",
+        "@abseil-cpp//absl/log",
+    ],
+)
+
+cf_cc_library(
+    name = "stat",
+    srcs = ["stat.cc"],
+    hdrs = ["stat.h"],
+    deps = [
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/posix:temp_failure_retry",
+        "//cuttlefish/result:expect",
+        "//cuttlefish/result:result_type",
+    ],
+)
+
+cf_cc_library(
+    name = "temp_failure_retry",
+    hdrs = ["temp_failure_retry.h"],
+)

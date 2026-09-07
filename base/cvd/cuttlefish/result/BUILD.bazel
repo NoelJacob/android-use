@@ -1,0 +1,67 @@
+load("//cuttlefish/bazel:rules.bzl", "cf_cc_library", "cf_cc_test")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_cc_library(
+    name = "error_type",
+    srcs = ["error_type.cc"],
+    hdrs = ["error_type.h"],
+    deps = [
+        "//cuttlefish/ansi_codes",
+        "//cuttlefish/ansi_codes:should_color",
+        "@abseil-cpp//absl/strings",
+        "@fmt",
+        "@tl-expected",
+    ],
+)
+
+cf_cc_library(
+    name = "expect",
+    hdrs = ["expect.h"],
+    deps = [
+        "//cuttlefish/result:error_type",
+        "//cuttlefish/result:result_type",
+        "@fmt",
+        "@tl-expected",
+    ],
+)
+
+cf_cc_library(
+    name = "result",
+    hdrs = ["result.h"],
+    deps = [
+        "//cuttlefish/result:expect",
+        "//cuttlefish/result:result_type",
+    ],
+)
+
+cf_cc_test(
+    name = "result_test",
+    srcs = ["result_test.cpp"],
+    deps = [
+        "//cuttlefish/result",
+        "//cuttlefish/result:result_matchers",
+    ],
+)
+
+cf_cc_library(
+    name = "result_type",
+    hdrs = ["result_type.h"],
+    deps = [
+        "//cuttlefish/result:error_type",
+        "@tl-expected",
+    ],
+)
+
+cf_cc_library(
+    name = "result_matchers",
+    testonly = 1,
+    hdrs = ["result_matchers.h"],
+    deps = [
+        "//cuttlefish/result",
+        "@googletest//:gtest",
+        "@tl-expected",
+    ],
+)

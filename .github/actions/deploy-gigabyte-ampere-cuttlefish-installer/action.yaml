@@ -1,0 +1,40 @@
+name: 'Deploy installer for Gigabyte Ampere server'
+inputs:
+  deploy-channel:
+    required: true
+  image-version:
+    required: true
+  path:
+    required: true
+runs:
+  using: "composite"
+  steps:
+  - name: 'Set up Cloud SDK'
+    uses: 'google-github-actions/setup-gcloud@26f734c2779b00b7dda794207734c511110a4368'  # v3.0.0
+    with:
+      version: '>= 363.0.0'
+  - name: Deploy installer image into Artifact Registry
+    run: |
+      REPO=gigabyte-ampere-server-installer
+      pushd ${INPUTS_PATH}
+      gcloud artifacts versions delete ${INPUTS_DEPLOY_CHANNEL} \
+        --location=us \
+        --package="debian-installer" \
+        --project="android-cuttlefish-artifacts" \
+        --quiet \
+        --repository="${REPO}" || true
+      for VERSION in ${INPUTS_IMAGE_VERSION} ${INPUTS_DEPLOY_CHANNEL}; do
+        gcloud artifacts generic upload \
+          --location=us \
+          --package="debian-installer" \
+          --project="android-cuttlefish-artifacts" \
+          --repository="${REPO}" \
+          --version="${VERSION}" \
+          --source=$(find . -name *.iso.xz)
+      done
+      popd
+    shell: bash
+    env:
+      INPUTS_DEPLOY_CHANNEL: ${{ inputs.deploy-channel }}
+      INPUTS_IMAGE_VERSION: ${{ inputs.image-version }}
+      INPUTS_PATH: ${{ inputs.path }}
