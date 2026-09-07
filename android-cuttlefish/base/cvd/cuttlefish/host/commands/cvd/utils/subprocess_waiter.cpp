@@ -1,0 +1,84 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/utils/subprocess_waiter.h"
+
+#include <signal.h>  // IWYU pragma: keep: siginfo_t
+#include <stdint.h>
+#include <sys/wait.h>  // IWYU pragma: keep: WEXITED, WNOWAIT
+
+#include <mutex>
+
+#include "cuttlefish/process/command.h"
+#include "cuttlefish/process/subprocess.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+
+Result<void> SubprocessWaiter::Setup(Command& command) {
+  std::unique_lock interrupt_lock(interruptible_);
+  CF_EXPECT(!interrupted_, "Interrupted");
+  CF_EXPECT(!subprocess_, "Already running");
+
+  subprocess_ = command.Start();
+  return {};
+}
+
+// NOLINTNEXTLINE(misc-include-cleaner): <signal.h>
+Result<siginfo_t> SubprocessWaiter::Wait() {
+  std::unique_lock interrupt_lock(interruptible_);
+  CF_EXPECT(!interrupted_, "Interrupted");
+  CF_EXPECT(subprocess_.has_value());
+
+  interrupt_lock.unlock();
+
+  // This blocks until the process exits, but doesn't reap it.
+  // NOLINTNEXTLINE(misc-include-cleaner): <sys/wait.h>
+  siginfo_t infop = CF_EXPECT(subprocess_->Wait(WEXITED | WNOWAIT));
+  interrupt_lock.lock();
+  // Perform a reaping wait on the process (which should already have exited).
+  // NOLINTNEXTLINE(misc-include-cleaner): <sys/wait.h>
+  infop = CF_EXPECT(subprocess_->Wait(WEXITED));
+  // The double wait avoids a race around the kernel reusing pids. Waiting
+  // with WNOWAIT won't cause the child process to be reaped, so the kernel
+  // won't reuse the pid until the Wait call below, and any kill signals won't
+  // reach unexpected processes.
+
+  subprocess_ = {};
+
+  return infop;
+}
+
+Result<void> SubprocessWaiter::Interrupt() {
+  std::scoped_lock interrupt_lock(interruptible_);
+  if (subprocess_) {
+    auto stop_result = subprocess_->Stop();
+    switch (stop_result) {
+      case StopperResult::kFailure:
+        return CF_ERR("Failed to stop subprocess");
+      case StopperResult::kCrash:
+        return CF_ERR("Stopper caused process to crash");
+      case StopperResult::kSuccess:
+        return {};
+      default:
+        return CF_ERRF("Unknown stop result: {}", (uint64_t)stop_result);
+    }
+  }
+  interrupted_ = true;
+  return {};
+}
+
+}  // namespace cuttlefish

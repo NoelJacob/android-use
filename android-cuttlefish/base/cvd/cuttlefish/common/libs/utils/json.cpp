@@ -1,0 +1,58 @@
+//
+// Copyright (C) 2022 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "cuttlefish/common/libs/utils/json.h"
+
+#include <fcntl.h>
+
+#include <memory>
+#include <string>
+#include <string_view>
+
+#include "json/config.h"
+#include "json/reader.h"
+#include "json/value.h"
+
+#include "cuttlefish/common/libs/fs/fd.h"
+#include "cuttlefish/io/io.h"
+#include "cuttlefish/io/string.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+
+Result<Json::Value> ParseJson(std::string_view input) {
+  Json::Value root;
+  JSONCPP_STRING err;
+  Json::CharReaderBuilder builder;
+  const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  auto begin = input.data();
+  auto end = begin + input.length();
+  CF_EXPECT(reader->parse(begin, end, &root, &err), err);
+  return root;
+}
+
+Result<Json::Value> LoadFromFile(Reader& json_reader) {
+  const std::string json_contents = CF_EXPECT(ReadToString(json_reader));
+  Json::Value json_value = CF_EXPECTF(
+      ParseJson(json_contents), "Failed to parse json: \n{}", json_contents);
+  return json_value;
+}
+
+Result<Json::Value> LoadFromFile(const std::string& path_to_file) {
+  Fd json_fd = CF_EXPECT(Fd::Open(path_to_file, O_RDONLY));
+  return CF_EXPECT(LoadFromFile(json_fd));
+}
+
+}  // namespace cuttlefish

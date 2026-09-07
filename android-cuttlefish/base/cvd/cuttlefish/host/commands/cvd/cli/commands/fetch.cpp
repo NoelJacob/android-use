@@ -1,0 +1,126 @@
+/*
+ * Copyright (C) 2022 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/commands/cvd/cli/commands/fetch.h"
+
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "fmt/core.h"
+#include "fmt/format.h"
+
+#include "cuttlefish/common/libs/utils/files.h"
+#include "cuttlefish/common/libs/utils/tee_logging.h"
+#include "cuttlefish/host/commands/cvd/cache/cache.h"
+#include "cuttlefish/host/commands/cvd/cli/command_request.h"
+#include "cuttlefish/host/commands/cvd/fetch/auto_login.h"
+#include "cuttlefish/host/commands/cvd/fetch/build_api_flags.h"
+#include "cuttlefish/host/commands/cvd/fetch/fetch_cvd.h"
+#include "cuttlefish/host/commands/cvd/fetch/fetch_cvd_parser.h"
+#include "cuttlefish/host/commands/cvd/utils/common.h"
+#include "cuttlefish/metrics/fetch_metrics_orchestration.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+
+namespace {
+
+Result<void> RunAutoLogin(const BuildApiFlags& build_api_flags) {
+  if (!CF_EXPECT(ShouldAutoLogin(build_api_flags))) {
+    return {};
+  }
+  LOG(INFO) << "\nNo credentials detected on corp, running credential "
+               "workflow.  Please follow prompts.\n";
+  if (!CanRunAutoLogin()) {
+    LOG(INFO) << "\nUnable to detect necessary files for credentialing.  Do "
+                 "you need to run `gcert`?\n";
+    return {};
+  }
+
+  CF_EXPECT(RunLogin());
+  LOG(INFO)
+      << "\nLogin successful.  This will persist across future executions.";
+  return {};
+}
+
+Result<void> RunCacheCleanup(const BuildApiFlags& build_api_flags) {
+  if (!build_api_flags.enable_caching) {
+    return {};
+  }
+
+  VLOG(0) << "Running automatic cache cleanup";
+  const std::string cache_directory = PerUserCacheDir();
+  const PruneResult prune_result =
+      CF_EXPECTF(PruneCache(cache_directory, build_api_flags.max_cache_size_gb),
+                 "Error pruning cache at {} to {}GB", cache_directory,
+                 build_api_flags.max_cache_size_gb);
+  if (prune_result.before > prune_result.after) {
+    VLOG(0) << fmt::format(
+        "Cache at \"{}\" pruned from ~{}GB to ~{}GB of {}GB max size",
+        cache_directory, prune_result.before, prune_result.after,
+        build_api_flags.max_cache_size_gb);
+  }
+  return {};
+}
+
+}  // namespace
+
+Result<void> CvdFetchCommandHandler::Handle(const CommandRequest& request) {
+  std::vector<std::string> args = request.SubcommandArguments();
+  const FetchFlags flags = CF_EXPECT(FetchFlags::Parse(args));
+  CF_EXPECT(EnsureDirectoryExists(flags.target_directory));
+  Result<void> ensure_credentials_result = RunAutoLogin(flags.build_api_flags);
+  if (!ensure_credentials_result.has_value()) {
+    LOG(INFO) << "Auto-login failed with the following error:\n"
+              << ensure_credentials_result.error() << "\n";
+    LOG(INFO) << "Still running the fetch operation.";
+  }
+
+  GatherFetchStartMetrics(flags);
+  std::string log_file = GetFetchLogsFileName(flags.target_directory);
+  ScopedLogger logger(SeverityTarget::FromFile(log_file), "");
+
+  Result<FetchResult> result = FetchCvdMain(flags);
+  CF_EXPECT(RunCacheCleanup(flags.build_api_flags));
+
+  if (result.has_value()) {
+    GatherFetchCompleteMetrics(flags.target_directory, *result);
+  } else {
+    GatherFetchFailedMetrics(flags.target_directory);
+  }
+  CF_EXPECT(std::move(result));
+  return {};
+}
+
+std::vector<std::string> CvdFetchCommandHandler::CmdList() const {
+  return {"fetch", "fetch_cvd"};
+}
+
+std::string CvdFetchCommandHandler::SummaryHelp() const {
+  return "Retrieve build artifacts based on branch and target names";
+}
+
+Result<std::string> CvdFetchCommandHandler::DetailedHelp(
+    const CommandRequest& request) {
+  std::vector<std::string> args = {"--help"};
+  // TODO: b/389119573 - Should return the help text instead of printing it
+  CF_EXPECT(FetchFlags::Parse(args));
+  return {};
+}
+
+}  // namespace cuttlefish

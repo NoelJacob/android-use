@@ -1,0 +1,96 @@
+/*
+ * Copyright (C) 2017 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <chrono>
+#include <functional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "cuttlefish/common/libs/fs/shared_fd.h"
+#include "cuttlefish/result/result.h"
+
+namespace cuttlefish {
+Result<bool> CanHardLink(const std::string& source,
+                         const std::string& destination);
+inline Result<bool> CanRename(const std::string& source,
+                              const std::string& destination) {
+  return CanHardLink(source, destination);
+}
+
+Result<void> LinkOrCopyDirectoryContentsRecursively(
+    const std::string& source, const std::string& destination);
+// Merges the contents of the source directory into the destination directory.
+// The source directory is empty after this operation.
+Result<void> MoveDirectoryContents(const std::string& source,
+                                   const std::string& destination);
+bool FileHasContent(const std::string& path);
+Result<std::vector<std::string>> DirectoryContentsPaths(
+    const std::string& path);
+Result<void> EnsureDirectoryExists(const std::string& directory_path,
+                                   mode_t mode = S_IRWXU | S_IRWXG | S_IROTH |
+                                                 S_IXOTH,
+                                   const std::string& group_name = "");
+Result<void> ChangeGroup(const std::string& path,
+                         const std::string& group_name);
+bool CanAccess(const std::string& path, int mode);
+off_t FileSize(const std::string& path);
+Result<std::string> RenameFile(const std::string& current_filepath,
+                               const std::string& target_filepath);
+std::string ReadFile(const std::string& file);
+Result<std::string> ReadFileContents(const std::string& path);
+Result<void> WriteNewFile(const std::string& filepath, std::string_view content,
+                          mode_t mode = S_IRWXU | S_IRGRP | S_IROTH);
+bool MakeFileExecutable(const std::string& path);
+Result<std::chrono::system_clock::time_point> FileModificationTime(
+    const std::string& path);
+Result<uid_t> FileOwner(const std::string& path);
+
+// The returned value may contain .. or . if these are present in the path
+// argument.
+std::string AbsolutePath(std::string_view path);
+
+std::string CurrentDirectory();
+
+struct FileSizes {
+  off_t sparse_size;
+  off_t disk_size;
+};
+FileSizes SparseFileSizes(const std::string& path);
+
+// Find file with name |target_name| under directory |path|, return path to
+// found file(if any)
+Result<std::string> FindFile(const std::string& path,
+                             const std::string& target_name);
+
+using WalkDirectoryCallback = std::function<Result<void>(const std::string&)>;
+
+Result<void> WalkDirectory(const std::string& dir,
+                           const WalkDirectoryCallback& callback);
+
+std::vector<std::string> Path(const std::string& env_name = "PATH");
+
+Result<std::string> Search(const std::vector<std::string>& path,
+                           std::string_view name);
+
+Result<SharedFD> CreateOrReuseAndDrainFifo(const std::string& path,
+                                           mode_t mode);
+
+}  // namespace cuttlefish

@@ -1,0 +1,37 @@
+load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+gazelle(name = "gazelle")
+
+go_library(
+    name = "libhoclient",
+    srcs = [
+        "fake_host_orchestrator_client.go",
+        "host_orchestrator_client.go",
+        "httputils.go",
+    ],
+    importpath = "github.com/google/android-cuttlefish/frontend/src/libhoclient",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/host_orchestrator/api/v1:api",
+        "//src/libhoclient/webrtcclient",
+        "//src/liboperator/api/v1:api",
+        "@com_github_cenkalti_backoff_v4//:backoff",
+        "@com_github_gorilla_websocket//:websocket",
+        "@com_github_pion_webrtc_v3//:webrtc",
+    ],
+)
+
+go_test(
+    name = "libhoclient_test",
+    srcs = [
+        "fake_host_orchestrator_client_test.go",
+        "host_orchestrator_client_test.go",
+        "httputils_test.go",
+    ],
+    embed = [":libhoclient"],
+    deps = [
+        "//src/host_orchestrator/api/v1:api",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

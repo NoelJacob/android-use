@@ -1,0 +1,105 @@
+/*
+ * Copyright (C) 2020 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "cuttlefish/host/frontend/webrtc/libdevice/video_track_source_impl.h"
+
+#include <drm/drm_fourcc.h>
+#include <api/video/video_frame_buffer.h>
+
+#include "cuttlefish/host/frontend/webrtc/libcommon/abgr_buffer.h"
+
+namespace cuttlefish {
+namespace webrtc_streaming {
+
+namespace {
+
+class VideoFrameWrapper : public webrtc::I420BufferInterface {
+ public:
+  VideoFrameWrapper(
+      std::shared_ptr<::cuttlefish::PlanarVideoFrameBuffer> frame_buffer)
+      : frame_buffer_(frame_buffer) {}
+  ~VideoFrameWrapper() override = default;
+  int width() const override { return frame_buffer_->width(); }
+  int height() const override { return frame_buffer_->height(); }
+
+  int StrideY() const override { return frame_buffer_->StrideY(); }
+  int StrideU() const override { return frame_buffer_->StrideU(); }
+  int StrideV() const override { return frame_buffer_->StrideV(); }
+
+  const uint8_t *DataY() const override { return frame_buffer_->DataY(); }
+  const uint8_t *DataU() const override { return frame_buffer_->DataU(); }
+  const uint8_t *DataV() const override { return frame_buffer_->DataV(); }
+
+ private:
+  std::shared_ptr<::cuttlefish::PlanarVideoFrameBuffer> frame_buffer_;
+};
+
+}  // namespace
+
+VideoTrackSourceImpl::VideoTrackSourceImpl(int width, int height)
+    : webrtc::VideoTrackSource(false), width_(width), height_(height) {}
+
+void VideoTrackSourceImpl::OnFrame(std::shared_ptr<VideoFrameBuffer> frame,
+                                   int64_t timestamp_us) {
+  // Ensure strictly monotonic timestamps to prevent WebRTC from dropping
+  // frames with "Same/old NTP timestamp" errors. This can happen when
+  // frames arrive in bursts faster than system clock resolution.
+  if (timestamp_us <= last_timestamp_us_) {
+    timestamp_us = last_timestamp_us_ + 1;
+  }
+  last_timestamp_us_ = timestamp_us;
+
+  rtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer;
+
+  uint32_t fmt = frame->PixelFormat();
+  if (fmt == DRM_FORMAT_ABGR8888 || fmt == DRM_FORMAT_XBGR8888 ||
+      fmt == DRM_FORMAT_ARGB8888 || fmt == DRM_FORMAT_XRGB8888) {
+      auto packed =
+          std::dynamic_pointer_cast<PackedVideoFrameBuffer>(frame);
+      if (packed) {
+        buffer = rtc::scoped_refptr<webrtc::VideoFrameBuffer>(
+            new rtc::RefCountedObject<AbgrBuffer>(packed));
+      }
+  } else {
+      auto planar =
+          std::dynamic_pointer_cast<PlanarVideoFrameBuffer>(frame);
+      if (planar) {
+        buffer = rtc::scoped_refptr<webrtc::VideoFrameBuffer>(
+            new rtc::RefCountedObject<VideoFrameWrapper>(planar));
+      }
+  }
+
+  auto video_frame =
+      webrtc::VideoFrame::Builder()
+          .set_video_frame_buffer(buffer)
+          .set_timestamp_us(timestamp_us)
+          .build();
+  broadcaster_.OnFrame(video_frame);
+}
+
+bool VideoTrackSourceImpl::GetStats(Stats *stats) {
+  stats->input_height = height_;
+  stats->input_width = width_;
+  return true;
+}
+
+bool VideoTrackSourceImpl::SupportsEncodedOutput() const { return false; }
+rtc::VideoSourceInterface<webrtc::VideoFrame> *VideoTrackSourceImpl::source() {
+  return &broadcaster_;
+}
+
+}  // namespace webrtc_streaming
+}  // namespace cuttlefish

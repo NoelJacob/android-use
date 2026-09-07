@@ -1,0 +1,25 @@
+load("//cuttlefish/bazel:rules.bzl", "cf_build_test", "cf_cc_binary")
+
+package(
+    default_visibility = ["//:android_cuttlefish"],
+)
+
+cf_build_test(name = "console_forwarder_build_test")
+
+cf_cc_binary(
+    name = "console_forwarder",
+    srcs = [
+        "main.cpp",
+    ],
+    deps = [
+        "//cuttlefish/common/libs/fs",
+        "//cuttlefish/host/libs/config:config_instance_derived",
+        "//cuttlefish/host/libs/config:cuttlefish_config",
+        "//cuttlefish/host/libs/config:logging",
+        "//cuttlefish/posix:strerror",
+        "//cuttlefish/result",
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/log:check",
+        "@gflags",
+    ],
+)

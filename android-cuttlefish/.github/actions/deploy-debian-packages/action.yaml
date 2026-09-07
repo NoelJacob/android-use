@@ -1,0 +1,43 @@
+name: 'Deploy debian packages for Cuttlefish host'
+inputs:
+  deploy-channel:
+    required: true
+  path:
+    required: true
+runs:
+  using: "composite"
+  steps:
+  - name: 'Set up Cloud SDK'
+    uses: 'google-github-actions/setup-gcloud@26f734c2779b00b7dda794207734c511110a4368'  # v3.0.0
+    with:
+      version: '>= 363.0.0'
+  - name: Deploy deb packages into Artifact Registry
+    run: |
+      PACKAGES=(
+        "cuttlefish-base"
+        "cuttlefish-integration-gigabyte-arm64"
+        "cuttlefish-metrics"
+        "cuttlefish-orchestration"
+        "cuttlefish-user"
+        "cuttlefish-podcvd"
+      )
+
+      if [[ ${INPUTS_DEPLOY_CHANNEL} == "stable" ]]; then
+        REPO=android-cuttlefish
+      else
+        REPO=android-cuttlefish-${INPUTS_DEPLOY_CHANNEL}
+      fi
+
+      pushd ${INPUTS_PATH}
+      for package in "${PACKAGES[@]}"; do
+        gcloud --project=android-cuttlefish-artifacts \
+          artifacts apt upload \
+          ${REPO} \
+          --location=us \
+          --source=$(find . -name ${package}_*.deb)
+      done
+      popd
+    shell: bash
+    env:
+      INPUTS_DEPLOY_CHANNEL: ${{ inputs.deploy-channel }}
+      INPUTS_PATH: ${{ inputs.path }}
