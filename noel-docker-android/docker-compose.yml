@@ -1,0 +1,43 @@
+services:
+  android-emulator:
+    build: .
+    image: android-emulator:local
+    container_name: android-emulator
+
+    environment:
+      AVD_NAME: "my_avd"          # must match the AVD folder name in the mounted volume
+      GPU_MODE: "host"            # real GPU passthrough via NVIDIA
+      ACCEL_MODE: "auto"          # picks up KVM automatically when /dev/kvm is present
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all   # graphics,compute,utility,video,display
+
+    devices:
+      - /dev/kvm:/dev/kvm         # real CPU virtualization acceleration
+      # NVIDIA device nodes (/dev/nvidia0, /dev/nvidiactl, /dev/nvidia-uvm, ...)
+      # are injected automatically by the nvidia-container-toolkit below —
+      # no manual /dev/dri or /dev/nvidia* mapping needed.
+
+    # Host GID for kvm access — find yours with: getent group kvm
+    group_add:
+      - "${KVM_GID:-992}"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    ports:
+      - "5554:5554"   # emulator console
+      - "5555:5555"   # adb — target this from the host with:
+                        #   adb connect 127.0.0.1:5555
+                        #   scrcpy -s 127.0.0.1:5555
+
+    volumes:
+      - ./avd:/home/android/.android/avd   # persist/mount your AVD (system image + config.ini)
+
+    shm_size: "4gb"   # emulator needs generous shared memory for smooth rendering
+
+    restart: unless-stopped

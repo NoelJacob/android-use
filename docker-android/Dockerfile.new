@@ -1,0 +1,290 @@
+# =====================================================================
+# Minimal headless, NVIDIA GPU-accelerated Android Emulator (Docker + KVM)
+# with aggressive diagnostic logging.
+#
+# Build:
+#   docker build -t android-emu-gpu --build-arg API_LEVEL=34 \
+#     --build-arg ARCH=x86_64 --build-arg TARGET=google_apis .
+#
+# Run (host needs: NVIDIA driver + nvidia-container-toolkit, /dev/kvm,
+# and your user must have kvm group perms):
+#   docker run -d --name android-emu \
+#     --gpus all \
+#     --device /dev/kvm \
+#     -e NVIDIA_VISIBLE_DEVICES=all \
+#     -e NVIDIA_DRIVER_CAPABILITIES=all,graphics,display \
+#     -e LOG_LEVEL=debug \
+#     -p 5555:5555 -p 8554:8554 \
+#     -v /mnt/expansion/Linux/opt/android-sdk:/opt/android-sdk:ro
+#     android-emu-gpu
+#
+# Tail logs live:
+#   docker logs -f android-emu
+#
+# Pull emulator's own internal log + kernel log from inside the container:
+#   docker exec android-emu cat /var/log/emulator/emulator.log
+#   docker exec android-emu cat /var/log/emulator/logcat.log
+#
+# Connect:
+#   adb connect localhost:5555
+# =====================================================================
+
+FROM nvidia/opengl:1.2-glvnd-runtime-ubuntu22.04
+
+LABEL description="Minimal headless GPU-accelerated Android Emulator with aggressive logging"
+
+ARG API_LEVEL=36
+ARG ARCH=x86_64
+ARG TARGET=google_apis_playstore
+ARG CMDLINE_TOOLS_VERSION=15859902
+
+ENV ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    DEBIAN_FRONTEND=noninteractive \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:$PATH
+
+# --- Runtime deps + diagnostic tooling (pciutils/lsof/procps for logging, no full X stack) ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget unzip openjdk-21-jre-headless \
+         \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Android SDK cmdline-tools (smallest possible SDK footprint) ---
+RUN <<EOF
+  echo "Installing the cmdline-tools, images and emulator ..."
+  CMD_LINE_VERSION=${CMD_LINE_VERSION:-15859902_latest}
+  wget "https://dl.google.com/android/repository/commandlinetools-linux-${CMD_LINE_VERSION}.zip" -P /tmp
+  unzip -d /tmp "/tmp/commandlinetools-linux-${CMD_LINE_VERSION}.zip"
+  mkdir -p "${ANDROID_HOME}/cmdline-tools/latest/"
+  mv /tmp/cmdline-tools/* "${ANDROID_HOME}/cmdline-tools/latest/"
+  yes | sdkmanager --licenses
+  sdkmanager --install "${PACKAGE_PATH}" platform-tools emulator
+  echo -e \
+   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<d:devices xmlns:d=\"http://schemas.android.com/sdk/devices/7\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n</d:devices>\n" \
+   > "${ANDROID_HOME}/system-images/android-${API_LEVEL}/${ABI}/devices.xml"
+  rm -rf /tmp/* /root/.android/cache
+EOF
+
+RUN ls /opt/android-sdk
+
+# --- Only the emulator + platform-tools + one system image ---
+# RUN yes | sdkmanager --licenses > /dev/null && \
+#     sdkmanager --verbose --install \
+#       "platform-tools" \
+#       "emulator" \
+#       "system-images;android-${API_LEVEL};${TARGET};${ARCH}" \
+#     && rm -rf ${ANDROID_SDK_ROOT}/.temp
+
+RUN mkdir -p /var/log/emulator
+
+# --- Inline entrypoint script with aggressive, structured diagnostic logging ---
+RUN cat <<'EOF' > /entrypoint.sh
+#!/usr/bin/env bash
+# =====================================================================
+# Entrypoint: preflight diagnostics + AVD bootstrap + headless GPU launch
+# =====================================================================
+set -uo pipefail
+
+: "${API_LEVEL:=34}"
+: "${ARCH:=x86_64}"
+: "${TARGET:=google_apis_playstore}"
+: "${AVD_NAME:=headless_gpu}"
+: "${DEVICE_PROFILE:=pixel_9}"
+: "${EMU_MEMORY:=4096}"
+: "${EMU_CORES:=8}"
+: "${GPU_MODE:=host}"          # host = real NVIDIA GPU, swiftshader_indirect = software fallback
+: "${LOG_LEVEL:=info}"         # info | debug
+: "${BOOT_TIMEOUT:=180}"       # seconds to wait for sys.boot_completed
+
+LOG_DIR=/var/log/emulator
+EMULATOR_LOG="${LOG_DIR}/emulator.log"
+LOGCAT_LOG="${LOG_DIR}/logcat.log"
+mkdir -p "${LOG_DIR}"
+
+ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
+log()  { echo "[$(ts)] [INFO ]  $*"; }
+warn() { echo "[$(ts)] [WARN ]  $*" >&2; }
+err()  { echo "[$(ts)] [ERROR]  $*" >&2; }
+dbg()  { [ "${LOG_LEVEL}" = "debug" ] && echo "[$(ts)] [DEBUG]  $*"; }
+hr()   { echo "-------------------------------------------------------------"; }
+
+trap 'err "Entrypoint failed at line $LINENO (exit code $?). See diagnostics above and ${EMULATOR_LOG}."' ERR
+
+hr
+log "Starting headless GPU-accelerated Android Emulator container"
+log "AVD_NAME=${AVD_NAME}  API_LEVEL=${API_LEVEL}  ARCH=${ARCH}  TARGET=${TARGET}"
+log "GPU_MODE=${GPU_MODE}  EMU_MEMORY=${EMU_MEMORY}MB  EMU_CORES=${EMU_CORES}  BOOT_TIMEOUT=${BOOT_TIMEOUT}s"
+hr
+
+# --- Preflight: KVM ---
+log "Checking KVM device..."
+if [ -e /dev/kvm ]; then
+  KVM_PERMS=$(ls -l /dev/kvm)
+  log "/dev/kvm found -> ${KVM_PERMS}"
+  if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+    warn "/dev/kvm exists but is not read/writable by this container's user. Emulator will fall back to slow software virtualization."
+    warn "Fix: re-run docker with '--device /dev/kvm' and ensure host user is in the 'kvm' group."
+  fi
+else
+  warn "/dev/kvm NOT found inside container."
+  warn "Fix: add '--device /dev/kvm' to your 'docker run' command, and confirm KVM is enabled on the host (egrep -c '(vmx|svm)' /proc/cpuinfo)."
+fi
+hr
+
+# --- Preflight: NVIDIA GPU ---
+log "Checking NVIDIA GPU visibility..."
+if command -v nvidia-smi >/dev/null 2>&1; then
+  if nvidia-smi > /tmp/nvidia-smi.out 2>&1; then
+    log "nvidia-smi reports:"
+    sed 's/^/    /' /tmp/nvidia-smi.out
+  else
+    warn "nvidia-smi exists but failed to run:"
+    sed 's/^/    /' /tmp/nvidia-smi.out
+    warn "Fix: confirm --gpus all was passed and nvidia-container-toolkit is installed/configured on the host (nvidia-ctk runtime configure)."
+  fi
+else
+  warn "nvidia-smi binary not found in container (expected -- it is injected by the NVIDIA Container Runtime)."
+  warn "If --gpus all was NOT passed to 'docker run', GPU_MODE=host will fail or silently fall back. Re-run with --gpus all."
+fi
+log "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}  NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-<unset>}"
+log "PCI GPU devices visible to container:"
+(lspci 2>/dev/null | grep -i -E 'vga|3d|display' | sed 's/^/    /') || warn "lspci found no GPU-class devices (this is expected in some minimal/lxc-cgroup setups)."
+hr
+
+# --- Preflight: SDK / tool versions ---
+log "Tool versions:"
+log "  java:      $(java -version 2>&1 | head -n1)"
+log "  emulator:  $(emulator -version 2>&1 | head -n1)"
+log "  adb:       $(adb --version 2>&1 | head -n1)"
+log "  avdmanager present: $(command -v avdmanager >/dev/null 2>&1 && echo yes || echo no)"
+log "  ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+hr
+
+# --- Preflight: resources ---
+log "Host-visible resources inside container:"
+log "  CPU cores: $(nproc)"
+log "  Memory:    $(free -h | awk '/^Mem:/{print $2" total, "$7" available"}')"
+log "  Disk (SDK root): $(df -h "${ANDROID_SDK_ROOT}" | awk 'NR==2{print $4" free of "$2}')"
+hr
+
+# --- AVD creation (idempotent) ---
+SYSIMG="system-images;android-${API_LEVEL};${TARGET};${ARCH}"
+AVD_DIR="${ANDROID_SDK_ROOT}/avd/${AVD_NAME}.avd"
+
+if [ -d "${AVD_DIR}" ]; then
+  log "AVD '${AVD_NAME}' already exists at ${AVD_DIR} -- skipping creation."
+else
+  log "Creating AVD '${AVD_NAME}' using system image '${SYSIMG}' and device profile '${DEVICE_PROFILE}'..."
+  if ! echo "no" | avdmanager create avd \
+      --force \
+      --name "${AVD_NAME}" \
+      --package "${SYSIMG}" \
+      --device "${DEVICE_PROFILE}" 2>&1 | tee -a "${LOG_DIR}/avd_create.log"; then
+    err "AVD creation failed. Full log at ${LOG_DIR}/avd_create.log"
+    err "Common causes: system image '${SYSIMG}' not installed, or invalid --device profile '${DEVICE_PROFILE}'."
+    log "Available system images:"
+    sdkmanager --list_installed | grep -i system-images | sed 's/^/    /'
+    exit 1
+  fi
+  log "AVD '${AVD_NAME}' created successfully."
+fi
+hr
+
+# --- Launch emulator, streaming its log to both stdout and a file ---
+log "Launching emulator (headless, gpu=${GPU_MODE})..."
+log "Full emulator output is being teed to ${EMULATOR_LOG} and this container's stdout."
+log "If boot stalls, inspect ${EMULATOR_LOG} for 'PANIC', 'FATAL', or 'goldfish' GPU errors."
+hr
+
+emulator -avd "${AVD_NAME}" \
+  -no-window \
+  -no-audio \
+  -no-boot-anim \
+  -no-snapshot \
+  -gpu "${GPU_MODE}" \
+  -memory "${EMU_MEMORY}" \
+  -cores "${EMU_CORES}" \
+  -accel on \
+  -verbose \
+  -qemu -enable-kvm \
+  > "${EMULATOR_LOG}" 2>&1 &
+EMULATOR_PID=$!
+log "Emulator process started with PID ${EMULATOR_PID}."
+
+# Live-tail emulator log to container stdout in the background for visibility
+tail -n +1 -F "${EMULATOR_LOG}" &
+TAIL_PID=$!
+
+# --- Wait for adb device + boot_completed with timeout, verbose polling ---
+log "Waiting for ADB device (timeout ${BOOT_TIMEOUT}s)..."
+SECONDS_WAITED=0
+until adb devices 2>/dev/null | grep -q "device$"; do
+  if ! kill -0 "${EMULATOR_PID}" 2>/dev/null; then
+    err "Emulator process ${EMULATOR_PID} died before ADB came online. Tail of ${EMULATOR_LOG}:"
+    tail -n 40 "${EMULATOR_LOG}" | sed 's/^/    /'
+    kill "${TAIL_PID}" 2>/dev/null
+    exit 1
+  fi
+  if [ "${SECONDS_WAITED}" -ge "${BOOT_TIMEOUT}" ]; then
+    err "Timed out after ${BOOT_TIMEOUT}s waiting for ADB device."
+    tail -n 40 "${EMULATOR_LOG}" | sed 's/^/    /'
+    kill "${TAIL_PID}" 2>/dev/null
+    exit 1
+  fi
+  dbg "Still waiting for ADB device... (${SECONDS_WAITED}s elapsed)"
+  sleep 2
+  SECONDS_WAITED=$((SECONDS_WAITED + 2))
+done
+log "ADB device detected after ${SECONDS_WAITED}s: $(adb devices | grep device$)"
+
+log "Waiting for sys.boot_completed=1 (this can take longer than ADB attach)..."
+until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; do
+  if [ "${SECONDS_WAITED}" -ge "${BOOT_TIMEOUT}" ]; then
+    err "Timed out after ${BOOT_TIMEOUT}s waiting for full boot (sys.boot_completed)."
+    tail -n 40 "${EMULATOR_LOG}" | sed 's/^/    /'
+    kill "${TAIL_PID}" 2>/dev/null
+    exit 1
+  fi
+  dbg "Boot in progress... (${SECONDS_WAITED}s elapsed)"
+  sleep 3
+  SECONDS_WAITED=$((SECONDS_WAITED + 3))
+done
+log "Boot completed in ~${SECONDS_WAITED}s."
+hr
+
+# --- Post-boot diagnostics: confirm which GPU renderer actually got used ---
+log "Post-boot GPU/render diagnostics:"
+adb shell dumpsys SurfaceFlinger 2>/dev/null | grep -i -E 'GLES|Vendor|Renderer' | sed 's/^/    /' || warn "Could not query SurfaceFlinger renderer info."
+adb shell getprop ro.hardware.egl 2>/dev/null | sed 's/^/    egl backend: /'
+adb shell getprop ro.opengles.version 2>/dev/null | sed 's/^/    opengles version code: /'
+log "If GPU_MODE=host but the renderer above shows 'swiftshader' or 'llvmpipe' rather than an NVIDIA vendor string,"
+log "GPU passthrough silently fell back to software. Re-check --gpus all and nvidia-container-toolkit config on the host."
+hr
+
+# --- Start logcat capture in background so container logs show app/system logs too ---
+log "Starting logcat capture to ${LOGCAT_LOG} and container stdout..."
+adb logcat -v threadtime > "${LOGCAT_LOG}" 2>&1 &
+LOGCAT_PID=$!
+tail -n +1 -F "${LOGCAT_LOG}" &
+
+log "Emulator is ready. adb endpoint: 0.0.0.0:5555 (map with -p 5555:5555). PID=${EMULATOR_PID}, logcat PID=${LOGCAT_PID}."
+log "Container will now block on the emulator process; 'docker logs -f' shows live emulator + logcat output."
+hr
+
+wait "${EMULATOR_PID}"
+EXIT_CODE=$?
+err "Emulator process exited with code ${EXIT_CODE}. Final 60 lines of ${EMULATOR_LOG}:"
+tail -n 60 "${EMULATOR_LOG}" | sed 's/^/    /'
+exit "${EXIT_CODE}"
+EOF
+RUN chmod +x /entrypoint.sh
+
+ENV API_LEVEL=${API_LEVEL} \
+    ARCH=${ARCH} \
+    TARGET=${TARGET}
+
+EXPOSE 5555 8554
+
+ENTRYPOINT ["/entrypoint.sh"]

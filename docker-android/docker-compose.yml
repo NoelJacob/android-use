@@ -1,0 +1,24 @@
+services:
+  android-emulator-cuda-store:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.gpu
+    ports:
+      - 5554:5554
+      - 127.0.0.1:5555:5555
+    privileged: true
+    devices:
+      - /dev/kvm:/dev/kvm
+    tty: true
+    stdin_open: true
+    # Key mount removed: image owns correct root-owned keys
+    #   - ./:/mnt
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, graphics, display]

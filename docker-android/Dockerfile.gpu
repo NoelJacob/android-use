@@ -1,0 +1,75 @@
+FROM nvidia/opengl:1.2-glvnd-runtime-ubuntu22.04
+
+LABEL maintainer="Noel Jacob <noeljacob91@gmail.com>" \
+  description="A Docker image allowing to run an Android tool use" \
+  version="0.0.1"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+TZ=Asia/Kolkata
+
+RUN apt-get update -y && \
+apt-get install -y --no-install-recommends \
+  bash \
+  unzip \
+  wget \
+  dbus \
+  openjdk-17-jre-headless \
+  libvulkan1 \
+  libx11-6 \
+  libx11-xcb1 \
+  socat \
+  htop \
+  iproute2 && \
+rm -rf /var/lib/apt/lists/*
+
+ARG API_LEVEL=36
+ARG IMG_TYPE=google_apis_playstore
+ARG ARCHITECTURE=x86_64
+ARG DEVICE_ID=pixel_9
+ARG INSTALL_ANDROID_SDK=1
+
+ENV API_LEVEL=${API_LEVEL} \
+  IMG_TYPE=${IMG_TYPE} \
+  ARCHITECTURE=${ARCHITECTURE} \
+  DEVICE_ID=${DEVICE_ID} \
+  INSTALL_ANDROID_SDK=${INSTALL_ANDROID_SDK}
+
+ENV ANDROID_HOME="/opt/android" \
+  PACKAGE_PATH="system-images;android-${API_LEVEL};${IMG_TYPE};${ARCHITECTURE}" \
+  ABI="${IMG_TYPE}/${ARCHITECTURE}" \
+  QTWEBENGINE_DISABLE_SANDBOX=1 \
+  ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL=10 \
+  ANDROID_EMULATOR_HOME="/data/emulator" \
+  QEMU_AUDIO_DRV=none
+
+ENV PATH="${PATH}:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/emulator:${ANDROID_HOME}/cmdline-tools/latest/bin"
+ENV LD_LIBRARY_PATH="${ANDROID_HOME}/emulator/lib64:${ANDROID_HOME}/emulator/lib64/qt/lib"
+
+WORKDIR /opt
+
+# Exposing the Android emulator console port
+# and the ADB port.
+EXPOSE 5554 5555
+
+# Initializing the required directories.
+RUN mkdir /root/.android/ && \
+  touch /root/.android/repositories.cfg && \
+  mkdir -p /data/emulator/keys
+
+# Exporting ADB keys.
+COPY keys/* /data/emulator/keys/
+RUN chown root:root /data/emulator/keys/adbkey* && chmod 600 /data/emulator/keys/adbkey
+
+# The following layers will download the Android command-line tools
+# to install the Android SDK, emulator and system images.
+# It will then install the Android SDK and emulator.
+COPY scripts/install-sdk.sh /opt/
+RUN chmod +x /opt/install-sdk.sh && \
+  /opt/install-sdk.sh
+
+# Copy the container scripts in the image.
+COPY scripts/start-emulator.sh /opt/
+COPY scripts/emulator-monitoring.sh /opt/
+RUN chmod +x /opt/*.sh
+
+ENTRYPOINT ["/opt/start-emulator.sh"]
