@@ -1,0 +1,163 @@
+# Maintainer: Noel Jacob <noeljacob 91 at gmail dot come>
+# Arch port of the Debian packaging (base + frontend debian/).
+
+pkgname=cuttlefish
+pkgver=1.58.0
+pkgrel=1
+pkgdesc='Cuttlefish Android Virtual Device host tools and WebRTC operator (base + user)'
+arch=('x86_64')
+url='https://github.com/google/android-cuttlefish'
+license=('Apache-2.0')
+depends=(curl dnsmasq grub iproute2 iptables jq less
+  libarchive libcap libdrm dtc fmt gflags libglvnd jsoncpp xz protobuf
+  libsrtp openssl wayland libx11 libxext libxml2 z3 net-tools nftables
+  opus-tools python xdg-utils shadow systemd)
+optdepends=()
+makedepends=(bazelisk cmake git go curl nodejs
+  aom glibc libcap clang fmt gflags google-glog gtest jsoncpp xz opus
+  protobuf-c protobuf libsrtp openssl wayland libxml2 z3 pkgconf
+  util-linux-libs dtc python
+  libxml2-legacy libxcrypt-compat)
+provides=(cuttlefish-base cuttlefish-user)
+conflicts=(cuttlefish-base cuttlefish-user)
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/base/cvd"
+  bazel build -c opt 'cuttlefish/package:common' \
+    --spawn_strategy=local \
+    --workspace_status_command=../stamp_helper.sh \
+    --build_tag_filters=-clang-tidy
+  chmod -R +w "bazel-out/k8-opt/bin/cuttlefish/package/"
+
+  cd "$startdir/frontend"
+  src/goutil src/host_orchestrator build -v -buildmode=pie -ldflags="-w"
+  src/goutil src/operator build -v -buildmode=pie -ldflags="-w"
+  ./build-webui.sh
+}
+
+package() {
+  # --- cuttlefish-base ---
+  local out="$startdir/base/cvd/bazel-out/k8-opt/bin/cuttlefish/package/cuttlefish-common"
+  install -dm755 "$pkgdir/usr/lib"
+  cp -a "$out" "$pkgdir/usr/lib/cuttlefish-common"
+  rm -rf "$pkgdir/usr/lib/cuttlefish-common"/bin/cvd.repo_mapping \
+         "$pkgdir/usr/lib/cuttlefish-common"/bin/cvd.runfiles*
+  chmod -x "$pkgdir/usr/lib/cuttlefish-common"/bin/*.json
+  find "$pkgdir/usr/lib/cuttlefish-common/etc" -type f -exec chmod -x '{}' +
+  install -Dm755 "$startdir/base/host/deploy/capability_query.py" \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/capability_query.py"
+  cp -a "$startdir"/base/host/packages/cuttlefish-base/* "$pkgdir/"
+
+  install -dm755 "$pkgdir/usr/bin" \
+    "$pkgdir/usr/lib/cuttlefish-common/bin"/{aarch64-linux-gnu,x86_64-linux-gnu} \
+    "$pkgdir/usr/lib/cuttlefish-common/lib64"
+  ln -sf /usr/lib/cuttlefish-common/bin/cvd "$pkgdir/usr/bin/cvd"
+  ln -sf /usr/lib/cuttlefish-common/bin/graphics_detector \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/aarch64-linux-gnu/gfxstream_graphics_detector"
+  ln -sf /usr/lib/cuttlefish-common/bin/libvk_swiftshader.so \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/aarch64-linux-gnu/libvk_swiftshader.so"
+  ln -sf /usr/lib/cuttlefish-common/bin/graphics_detector \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/x86_64-linux-gnu/gfxstream_graphics_detector"
+  ln -sf /usr/lib/cuttlefish-common/bin/libvk_lavapipe.so \
+    "$pkgdir/usr/lib/cuttlefish-common/lib64/vulkan.lvp.so"
+  ln -sf /usr/lib/cuttlefish-common/bin/libvk_swiftshader.so \
+    "$pkgdir/usr/lib/cuttlefish-common/lib64/vulkan.pastel.so"
+
+  install -Dm644 "$startdir/base/debian/cuttlefish-base.udev" \
+    "$pkgdir/usr/lib/udev/rules.d/88-cuttlefish-base.rules"
+
+  sed '/\/lib\/lsb\/init-functions/d' \
+    "$startdir/base/debian/cuttlefish-base.cuttlefish-host-resources.init" \
+    | install -Dm755 /dev/stdin "$pkgdir/usr/bin/cuttlefish-host-resources"
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/cuttlefish-host-resources.service" <<'EOF'
+[Unit]
+Description=Set up initial cuttlefish environment
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=-/etc/default/cuttlefish-host-resources
+ExecStart=/usr/bin/cuttlefish-host-resources start
+ExecStop=/usr/bin/cuttlefish-host-resources stop
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  install -Dm644 "$startdir/base/debian/cuttlefish-base.cuttlefish-host-resources.default" \
+    "$pkgdir/etc/default/cuttlefish-host-resources"
+
+  printf 'g cvdnetwork - -\n' | install -Dm644 /dev/stdin \
+    "$pkgdir/usr/lib/sysusers.d/cuttlefish.conf"
+  printf 'u _cutf-operator - "Cuttlefish operator" /var/empty /usr/bin/nologin\ng _cutf-operator - -\nm _cutf-operator cvdnetwork\n' \
+    >> "$pkgdir/usr/lib/sysusers.d/cuttlefish.conf"
+  printf '%s\n' 'd /var/empty 0555 root root -' \
+    'd /etc/cuttlefish-common/operator/cert 0750 _cutf-operator cvdnetwork -' \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/lib/tmpfiles.d/cuttlefish.conf"
+
+  setcap cap_net_admin,cap_net_bind_service,cap_net_raw=+ep \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/cvdalloc"
+  setcap cap_setgid=+ep \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/cvd_refresh_groups"
+
+  install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/cuttlefish/LICENSE"
+  install -Dm755 "$startdir/frontend/src/operator/operator" \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/operator"
+  install -Dm755 "$startdir/frontend/src/host_orchestrator/host_orchestrator" \
+    "$pkgdir/usr/lib/cuttlefish-common/bin/host_orchestrator"
+  ln -sf /usr/lib/cuttlefish-common/bin/host_orchestrator \
+    "$pkgdir/usr/bin/cvd_host_orchestrator"
+  install -dm755 "$pkgdir/usr/share/cuttlefish-common/operator"
+  cp -a "$startdir/frontend/src/operator/webui/dist/static" \
+    "$pkgdir/usr/share/cuttlefish-common/operator/"
+  cp -a "$startdir/frontend/src/operator/intercept" \
+    "$pkgdir/usr/share/cuttlefish-common/operator/"
+
+  install -Dm755 /dev/stdin "$pkgdir/usr/bin/cuttlefish-operator" <<'EOF'
+#!/bin/sh
+RUN_DIR="/run/cuttlefish"
+ASSET_DIR="/usr/share/cuttlefish-common/operator"
+DAEMON="/usr/lib/cuttlefish-common/bin/operator"
+[ -f /etc/default/cuttlefish-operator ] && . /etc/default/cuttlefish-operator
+operator_tls_cert_dir=${operator_tls_cert_dir:-/etc/cuttlefish-common/operator/cert}
+if [ ! -f "$operator_tls_cert_dir/cert.pem" ] || [ ! -f "$operator_tls_cert_dir/key.pem" ]; then
+  mkdir -p "$operator_tls_cert_dir"
+  openssl req -newkey rsa:4096 -x509 -sha256 -days 36000 -nodes \
+    -out "$operator_tls_cert_dir/cert.pem" -keyout "$operator_tls_cert_dir/key.pem" \
+    -subj "/C=US"
+fi
+mkdir -p "$RUN_DIR"
+set -- --log_file="$RUN_DIR/operator.log" --socket_path="$RUN_DIR/operator"
+[ -n "$operator_http_port" ] && set -- "$@" --http_port="$operator_http_port"
+[ -n "$operator_https_port" ] && set -- "$@" --https_port="$operator_https_port"
+[ -n "$operator_tls_cert_dir" ] && set -- "$@" --tls_cert_dir="$operator_tls_cert_dir"
+[ -n "$operator_webui_url" ] && set -- "$@" --webui_url="$operator_webui_url"
+[ -n "$operator_listen_address" ] && set -- "$@" --listen_addr="$operator_listen_address"
+cd "$ASSET_DIR" && exec "$DAEMON" "$@"
+EOF
+
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/cuttlefish-operator.service" <<'EOF'
+[Unit]
+Description=Cuttlefish operator (WebRTC signaling)
+After=network-online.target cuttlefish-host-resources.service
+Wants=network-online.target
+[Service]
+User=_cutf-operator
+Group=cvdnetwork
+EnvironmentFile=-/etc/default/cuttlefish-operator
+RuntimeDirectory=cuttlefish
+ExecStartPre=+/usr/bin/mkdir -p /etc/cuttlefish-common/operator/cert
+ExecStartPre=+/usr/bin/chown _cutf-operator:cvdnetwork /etc/cuttlefish-common/operator/cert
+RuntimeDirectoryMode=775
+WorkingDirectory=/usr/share/cuttlefish-common/operator
+ExecStart=/usr/bin/cuttlefish-operator
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  install -Dm644 "$startdir/frontend/debian/cuttlefish-user.cuttlefish-operator.default" \
+    "$pkgdir/etc/default/cuttlefish-operator"
+}

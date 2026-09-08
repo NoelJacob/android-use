@@ -1,0 +1,33 @@
+WebStaticFilesPath = "web"
+
+# List of allowed origins
+# e.g. "https://localhost:8080"
+CORSAllowedOrigins = []
+
+[AccountManager]
+Type = "username-only"
+
+[AccountManager.OAuth2]
+Provider = "Google"
+RedirectURL = "http://localhost:8080/oauth2callback"
+
+[SecretManager]
+Type = ""
+
+[EncryptionService]
+Type = "Fake"
+
+[DatabaseService]
+Type = "InMemory"
+
+[InstanceManager]
+Type = "docker"
+HostOrchestratorProtocol = "http"
+AllowSelfSignedHostSSLCertificate = true
+
+[InstanceManager.Docker]
+DockerImageName = "us-docker.pkg.dev/android-cuttlefish-artifacts/cuttlefish-orchestration/cuttlefish-orchestration:stable"
+HostOrchestratorPort = 2081
+
+[[WebRTC.IceServers]]
+URLs = ["stun:stun.l.google.com:19302"]
